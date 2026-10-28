@@ -119,6 +119,40 @@ Json fields_for(const UsdPrim& selected) {
     choices(cutout, {0, 1, 2, 3, 4, 5, 6, 7}, {"Never", "Less", "Equal", "Less or equal", "Greater", "Not equal", "Greater or equal (cutout)", "Always (no cutout)"});
     cutout["disabled_by"] = "inputs:use_legacy_alpha_state";
     add("inputs:alpha_test_reference_value", "Cutout threshold (0–255)", "Opacity", "float", 0.f, 0, 255)["disabled_by"] = "inputs:use_legacy_alpha_state";
+    // AperturePBR's thin film, and OpenRemix's iridescence controls beyond it
+    // (attributes outside the MDL inputs, which other runtimes ignore).
+    add("inputs:enable_thin_film", "Enable iridescence", "Iridescence", "bool", false, 0, 1, "bool")
+      ["tooltip"] = "A thin-film coating whose interference colours the reflection, like a soap bubble or oil slick.";
+    auto& thickness = add("inputs:thin_film_thickness_constant", "Thickness (nm)", "Iridescence", "float", 200.f, 0.001, 1500);
+    thickness["enabled_by"] = "inputs:enable_thin_film"; thickness["disabled_by"] = "inputs:thin_film_thickness_from_albedo_alpha";
+    thickness["tooltip"] = "Film thickness in nanometres. 200–600 gives vivid colours; thicker films fade to pastel.";
+    auto& from_alpha = add("inputs:thin_film_thickness_from_albedo_alpha", "Thickness from albedo alpha", "Iridescence", "bool", false, 0, 1, "bool");
+    from_alpha["enabled_by"] = "inputs:enable_thin_film";
+    from_alpha["tooltip"] = "Read the thickness from the base color texture's alpha (times 1500 nm). The material becomes fully opaque.";
+    auto openremix = [&](const char* name, const char* label, const char* group, const char* type, Json fallback,
+                         double minimum, double maximum, const char* tooltip, const char* control = "number") {
+      auto& field = add(name, label, group, type, fallback, minimum, maximum, control);
+      field["enabled_by"] = "inputs:enable_thin_film";
+      field["tooltip"] = std::string(tooltip) + " OpenRemix only.";
+    };
+    openremix("openremix:iridescence:strength", "Strength", "Iridescence", "float", 1.f, 0, 1,
+      "How much of the reflection is the film's.");
+    openremix("openremix:iridescence:filmIor", "Film index of refraction", "Iridescence", "float", 1.5f, 1, 3,
+      "Higher indices give stronger, more saturated colours (soap 1.33, oil 1.5, titanium oxide 2.4).");
+    openremix("openremix:iridescence:structural", "Structural colour", "Iridescence", "float", 0.f, 0, 1,
+      "Tints diffuse reflection with the film's colour too, like a beetle shell or butterfly wing, so rough surfaces shimmer.");
+    openremix("openremix:iridescence:thicknessTexture", "Thickness texture", "Iridescence", "asset", "", 0, 1,
+      "A map whose red channel spans the thickness range below, replacing the constant thickness.", "texture");
+    openremix("openremix:iridescence:thicknessMin", "Texture thickness min (nm)", "Iridescence", "float", 100.f, 0, 2000,
+      "The thickness where the map is black.");
+    openremix("openremix:iridescence:thicknessMax", "Texture thickness max (nm)", "Iridescence", "float", 800.f, 0, 2000,
+      "The thickness where the map is white.");
+    openremix("openremix:iridescence:flowAmplitude", "Flow amplitude (nm)", "Iridescence flow", "float", 0.f, 0, 2000,
+      "Animated swirls added to the thickness, like oil on water. Zero keeps the film still.");
+    openremix("openremix:iridescence:flowScale", "Flow scale", "Iridescence flow", "float", 1.f, 0.001, 1e6,
+      "The swirls' size, in scene units.");
+    openremix("openremix:iridescence:flowSpeed", "Flow speed", "Iridescence flow", "float", 0.1f, -100, 100,
+      "How fast the swirls drift, per second.");
   }
   add("inputs:normalmap_texture", "Normal texture", "Normal", "asset", "", 0, 1, "texture");
   add("inputs:enable_emission", "Enable emission", "Emission", "bool", false, 0, 1, "bool");

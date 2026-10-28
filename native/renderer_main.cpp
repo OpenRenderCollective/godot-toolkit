@@ -641,6 +641,37 @@ private:
     info.pNext = data.value("kind", std::string("opaque")) == "translucent" ? static_cast<void*>(&glass) : static_cast<void*>(&opaque);
     remixapi_MaterialNormalEncodingEXT normal_encoding{};
     if (openremix_) { normal_encoding.sType = REMIXAPI_STRUCT_TYPE_MATERIAL_NORMAL_ENCODING_EXT; normal_encoding.pNext = info.pNext; normal_encoding.encoding = uint32_t(data.value("normal_encoding", 0)) + 1; info.pNext = &normal_encoding; }
+    // The thin film (scene.cpp material_json): OpenRemix's iridescence
+    // extension, or the API's own thin-film fields on other runtimes.
+    // Authored values are clamped to the extension's ranges.
+    remixapi_MaterialIridescenceEXT film{};
+    NativePath film_texture;
+    if (auto found = data.find("iridescence"); found != data.end() && data.value("kind", std::string("opaque")) != "translucent") {
+      const auto& f = *found;
+      auto value = [&](const char* key, float fallback, float low, float high) {
+        const float v = f.value(key, fallback);
+        return std::isfinite(v) ? std::clamp(v, low, high) : fallback;
+      };
+      opaque.alphaIsThinFilmThickness = f.value("from_alpha", false);
+      if (openremix_) {
+        film.sType = REMIXAPI_STRUCT_TYPE_MATERIAL_IRIDESCENCE_EXT;
+        film.strength = value("strength", 1, 0, 1);
+        film.filmRefractiveIndex = value("ior", 1.5f, 1, 3);
+        film.thickness = value("thickness", 200, 0, 2000);
+        film.thicknessMin = value("min", 100, 0, 2000);
+        film.thicknessMax = std::max(film.thicknessMin, value("max", 800, 0, 2000));
+        film.flowAmplitude = value("flow_amplitude", 0, 0, 2000);
+        film.flowScale = value("flow_scale", 1, 1e-3f, 1e6f);
+        film.flowSpeed = value("flow_speed", .1f, -100, 100);
+        film.structural = value("structural", 0, 0, 1);
+        film_texture = native_path(f.value("texture", std::string()));
+        film.thicknessTexture = film_texture.c_str();
+        film.pNext = info.pNext; info.pNext = &film;
+      } else {
+        opaque.thinFilmThickness_hasvalue = true;
+        opaque.thinFilmThickness_value = value("thickness", 200, 0, 1500);
+      }
+    }
     remixapi_MaterialHandle handle{};
     checked(api_.CreateMaterial(&info, &handle), "CreateMaterial");
     materials_.emplace(data.at("id").get<std::string>(), handle);
