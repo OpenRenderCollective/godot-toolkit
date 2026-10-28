@@ -1071,6 +1071,7 @@ void Document::mutate(const Json& request, Json& result) {
   else if (op == "set_authoring_property") set_authoring_property(request);
   else if (op == "reset_authoring_property") set_authoring_property(request, true);
   else if (op == "set_light_type") set_light_type(request);
+  else if (op == "set_material_model") set_material_model(request);
   else if (op == "transform") set_transform(request);
   else if (op == "set_parent") result["selection"] = set_parent(request);
   else if (op == "add_mesh" || op == "replace_mesh") {
