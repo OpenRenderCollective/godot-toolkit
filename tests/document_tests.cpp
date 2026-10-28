@@ -192,6 +192,19 @@ void multiple_captures(const fs::path& root) {
   check(reopened.describe()["active_capture"] == second, "Missing capture must not displace the active one");
   std::ofstream(a) << original_a;
   check(text(a) == original_a && text(b) == original_b, "Capture assets must remain unchanged");
+  // A mod layer opened on its own takes no captures: they would load into the game with it.
+  editor::Document mod;
+  mod.open(project.parent_path() / "mod.usda");
+  rejects([&] { mod.dispatch({{"op", "add_capture"}, {"path", b.string()}}); }, "A mod layer must not take captures");
+  check(SdfLayer::FindOrOpen((project.parent_path() / "mod.usda").string())->GetSubLayerPaths().empty(), "A rejected capture must leave the mod layer alone");
+  // A workfile whose mod layer already holds a capture names it.
+  auto modLayer = SdfLayer::FindOrOpen((project.parent_path() / "mod.usda").string());
+  modLayer->SetSubLayerPaths({"../b.usda"}); modLayer->Save();
+  editor::Document nestedCapture;
+  nestedCapture.open(project);
+  std::string message;
+  try { nestedCapture.dispatch({{"op", "add_capture"}, {"path", a.string()}}); } catch (const std::exception& e) { message = e.what(); }
+  check(message.find("mod.usda sublayers the capture b.usda") != std::string::npos, "A capture nested in a mod layer must be named");
 }
 }
 int main() {

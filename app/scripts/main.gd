@@ -348,6 +348,16 @@ func _command(data: Dictionary) -> void:
 	if result.is_empty():
 		if data.op in ["add_capture", "select_capture"]:
 			_refresh_captures()
+			# The capture picker does not change: say why.
+			var notice := AcceptDialog.new()
+			notice.title = "Could not add capture" if data.op == "add_capture" else "Could not switch capture"
+			notice.dialog_text = status.text
+			notice.dialog_autowrap = true
+			notice.size = Vector2i(520, 0)
+			add_child(notice)
+			notice.confirmed.connect(notice.queue_free)
+			notice.canceled.connect(notice.queue_free)
+			notice.popup_centered()
 		if data.op in ["set_authoring_property", "reset_authoring_property", "set_light_type", "transform", "set_parent"] and library_selection.is_empty():
 			_select(selection)
 		return

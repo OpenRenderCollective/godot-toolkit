@@ -47,11 +47,12 @@ std::string required(const Json& data, const char* key) {
 std::string relative_asset(const fs::path& path, const SdfLayerHandle& layer) {
   return fs::relative(fs::absolute(path), fs::path(layer->GetRealPath()).parent_path()).generic_string();
 }
-bool is_capture(const SdfLayerHandle& layer) {
+std::string layer_type(const SdfLayerHandle& layer) {
   auto data = layer->GetCustomLayerData();
   auto it = data.find("lightspeed_layer_type");
-  return it != data.end() && it->second.IsHolding<std::string>() && it->second.Get<std::string>() == "capture";
+  return it != data.end() && it->second.IsHolding<std::string>() ? it->second.Get<std::string>() : std::string();
 }
+bool is_capture(const SdfLayerHandle& layer) { return layer_type(layer) == "capture"; }
 constexpr const char* capture_catalog = "remix_studio_captures";
 constexpr const char* standalone_root = "/RootNode/StudioAssets";
 const TfToken replacement_tag("remixStudioMeshReplacement");
@@ -239,6 +240,10 @@ void Document::select_capture(const fs::path& path, bool add) {
   auto root = stage_->GetRootLayer();
   const auto absolute = fs::weakly_canonical(path.is_absolute() ? path : project_path_.parent_path() / path);
   if (!fs::is_regular_file(absolute)) throw std::runtime_error("Capture file is missing: " + absolute.string());
+  // A capture under a mod layer would load into the game with the mod.
+  if (add && layer_type(root) == "replacement")
+    throw std::runtime_error(root->GetDisplayName() + " is a mod (replacement) layer. Open the project workfile that "
+                             "sublayers it to add captures.");
   auto source = UsdStage::Open(absolute.string());
   if (!source || !is_capture(source->GetRootLayer()) || !source->GetPrimAtPath(SdfPath("/RootNode")))
     throw std::runtime_error("Expected a Remix capture with /RootNode");
@@ -268,8 +273,15 @@ void Document::select_capture(const fs::path& path, bool add) {
       auto layer = SdfLayer::FindOrOpenRelativeToLayer(root, asset);
       if (layer) {
         auto nested = UsdStage::Open(layer);
+        // Name the layer holding the capture: it may be nested deeper.
         if (nested) for (auto child : nested->GetLayerStack(false))
-          if (is_capture(child)) throw std::runtime_error("Move nested capture sublayers to the workfile before switching captures");
+          for (const auto& path : child->GetSubLayerPaths()) {
+            auto sub = SdfLayer::FindOrOpenRelativeToLayer(child, path);
+            if (sub && is_capture(sub))
+              throw std::runtime_error(child->GetDisplayName() + " sublayers the capture " + sub->GetDisplayName() +
+                                       ". Remove it from " + child->GetDisplayName() +
+                                       " (a mod layer must not contain a capture), then add it to the project here.");
+          }
       }
       sublayers.push_back(asset); offsets.push_back(old_offsets[index]);
     }
