@@ -44,6 +44,33 @@ void material_sampling(const fs::path& root) {
   filter.Block(); u.Block(); v.Block();
   check_modes(1, 1, 1);
 }
+// A project linked into a game's mods folder is opened through the link, but
+// its capture paths are relative to the real directory.
+void linked_project(const fs::path& root) {
+  const auto directory = root / "linked";
+  fs::create_directories(directory / "game/rtx-remix/captures");
+  fs::create_directories(directory / "game/rtx-remix/mods");
+  fs::create_directories(directory / "projects/real");
+  fs::copy_file(fs::path(FIXTURE_DIR) / "capture.usda", directory / "game/rtx-remix/captures/capture.usda");
+  const auto link = directory / "game/rtx-remix/mods/linked";
+  std::error_code error;
+  fs::create_directory_symlink(directory / "projects/real", link, error);
+#ifdef _WIN32
+  // Without symlink privileges, a junction behaves the same way for ".." paths.
+  if (error) {
+    const auto command = "mklink /J \"" + link.string() + "\" \"" + (directory / "projects/real").string() + "\" >nul 2>&1";
+    if (std::system(command.c_str()) == 0) error.clear();
+  }
+#endif
+  if (error || !fs::is_directory(link)) { std::cout << "skipped linked project: cannot create a directory link\n"; return; }
+  editor::Document created;
+  created.create(directory / "game/rtx-remix/captures/capture.usda", directory / "projects/real/project.usda");
+  editor::Document document;
+  document.open(link / "project.usda");
+  const auto captures = document.describe()["captures"];
+  check(captures.size() == 1 && !captures[0]["missing"].get<bool>(), "A project opened through a link must find its capture");
+  check(!document.scene()["meshes"].empty(), "A project opened through a link must compose its capture");
+}
 void texture_resolution(const fs::path& root) {
   const auto directory = root / "texture_paths";
   fs::create_directories(directory / "reference/materials");
@@ -174,6 +201,7 @@ int main() {
     TfErrorMark usd_errors;
     material_sampling(root);
     texture_resolution(root);
+    linked_project(root);
     multiple_captures(root);
     fs::copy_file(fs::path(FIXTURE_DIR) / "capture.usda", root / "capture.usda");
     fs::copy_file(fs::path(FIXTURE_DIR) / "replacement.usda", root / "replacement.usda");
