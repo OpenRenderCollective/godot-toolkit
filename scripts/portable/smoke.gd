@@ -77,8 +77,8 @@ func _run() -> void:
 		return
 	check(not app.renderer.process.is_empty(), "Bundled Remix worker did not autostart")
 	app.last_scene.materials.append({"id": "portable_emission", "albedo": [1, 0.2, 0.1], "emissive": [1, 0.2, 0.1], "emissive_intensity": 10})
-	for mesh in app.last_scene.meshes:
-		for surface in mesh.surfaces:
+	for prototype in app.last_scene.prototypes:
+		for surface in prototype.surfaces:
 			surface.material = "portable_emission"
 	app.viewport.frame_selection(true)
 	app.renderer.response_received.connect(_response)

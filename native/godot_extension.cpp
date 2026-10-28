@@ -1,4 +1,6 @@
 #include "document.h"
+#include "scene_buffers.h"
+#include <cstring>
 #include <future>
 #include <atomic>
 #include <cmath>
@@ -13,6 +15,45 @@
 namespace editor {
 void register_gpu_bridge();
 namespace {
+template<typename Packed, typename Element> Packed copy_packed(const Json::binary_t& bytes, size_t components) {
+  Packed result;
+  const size_t count = bytes.size() / (sizeof(float) * components);
+  if (result.resize(int64_t(count)) != godot::OK) throw std::runtime_error("Not enough memory for scene data");
+  // Double-precision Godot builds store real_t components and need a conversion.
+  if (sizeof(godot::real_t) == sizeof(float)) {
+    if (count) std::memcpy(static_cast<void*>(result.ptrw()), bytes.data(), count * sizeof(float) * components);
+  } else {
+    for (size_t i = 0; i < count; ++i) {
+      float values[3]{};
+      std::memcpy(values, bytes.data() + i * components * sizeof(float), components * sizeof(float));
+      if constexpr (std::is_same_v<Element, godot::Vector3>) result.set(int64_t(i), godot::Vector3(values[0], values[1], values[2]));
+      else result.set(int64_t(i), godot::Vector2(values[0], values[1]));
+    }
+  }
+  return result;
+}
+// Scene buffers become packed arrays, ready for ArrayMesh without per-number Variants.
+godot::Variant packed(const Json::binary_t& bytes) {
+  const auto type = BufferType(bytes.has_subtype() ? bytes.subtype() : 0);
+  if (type == BufferType::vec3) return copy_packed<godot::PackedVector3Array, godot::Vector3>(bytes, 3);
+  if (type == BufferType::vec2) return copy_packed<godot::PackedVector2Array, godot::Vector2>(bytes, 2);
+  if (type == BufferType::i32 || type == BufferType::u32) {
+    godot::PackedInt32Array result;
+    if (result.resize(int64_t(bytes.size() / 4)) != godot::OK) throw std::runtime_error("Not enough memory for scene data");
+    if (result.size()) std::memcpy(result.ptrw(), bytes.data(), size_t(result.size()) * 4);
+    return result;
+  }
+  if (type == BufferType::f32) {
+    godot::PackedFloat32Array result;
+    if (result.resize(int64_t(bytes.size() / 4)) != godot::OK) throw std::runtime_error("Not enough memory for scene data");
+    if (result.size()) std::memcpy(result.ptrw(), bytes.data(), size_t(result.size()) * 4);
+    return result;
+  }
+  godot::PackedByteArray result;
+  if (result.resize(int64_t(bytes.size())) != godot::OK) throw std::runtime_error("Not enough memory for scene data");
+  if (!bytes.empty()) std::memcpy(result.ptrw(), bytes.data(), bytes.size());
+  return result;
+}
 godot::Variant variant(const Json& value) {
   if (value.is_object()) {
     godot::Dictionary result;
@@ -30,6 +71,7 @@ godot::Variant variant(const Json& value) {
     const auto& string = value.get_ref<const std::string&>();
     return godot::String::utf8(string.data(), string.size());
   }
+  if (value.is_binary()) return packed(value.get_binary());
   if (value.is_boolean()) return value.get<bool>();
   if (value.is_number()) {
     auto number = value.get<double>();
@@ -104,7 +146,7 @@ public:
   godot::String execute(const godot::String& json) {
     try {
       auto result = document_.dispatch(Json::parse(json.utf8().get_data()));
-      return Json({{"ok", true}, {"result", result}}).dump().c_str();
+      return Json({{"ok", true}, {"result", text_buffers(result)}}).dump().c_str();
     } catch (const std::exception& error) {
       return Json({{"ok", false}, {"error", error.what()}}).dump().c_str();
     }
@@ -161,9 +203,11 @@ public:
       return "{\"ok\":true}";
     } catch (const std::exception& error) { return Json{{"ok", false}, {"error", error.what()}}.dump().c_str(); }
   }
-  godot::String poll_asset_preview() {
-    if (!preview_job_.valid() || preview_job_.wait_for(std::chrono::milliseconds(0)) != std::future_status::ready) return "";
-    return preview_job_.get().dump().c_str();
+  godot::Dictionary poll_asset_preview() {
+    if (!preview_job_.valid() || preview_job_.wait_for(std::chrono::milliseconds(0)) != std::future_status::ready) return {};
+    auto response = preview_job_.get();
+    try { return variant(response); }
+    catch (const std::exception& error) { return variant(Json{{"ok", false}, {"error", error.what()}}); }
   }
   void cancel_asset_preview() { if (preview_canceled_) preview_canceled_->store(true); }
   godot::String asset_file_stamp(const godot::String& path) {

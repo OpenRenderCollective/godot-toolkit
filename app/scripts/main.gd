@@ -19,6 +19,7 @@ var game_link_dialog: AcceptDialog
 var sessions := ProjectSessions.new()
 var render_settings := RenderSettings.new()
 var render_settings_dialog: ConfirmationDialog
+var renderer_alert: AcceptDialog
 var welcome: Control
 var editor_page: Control
 var camera_mode: OptionButton
@@ -84,6 +85,7 @@ func _ready() -> void:
 	renderer = RendererClient.new()
 	add_child(renderer)
 	renderer.status_changed.connect(_log)
+	renderer.failed.connect(_renderer_failed)
 	renderer.response_received.connect(_renderer_response)
 	renderer.texture_ready.connect(func(texture: Texture2D):
 		if texture == null:
@@ -888,6 +890,17 @@ func _apply_render_settings(values: Dictionary) -> void:
 		else:
 			renderer.send({"op": "render_settings", "settings": render_settings.values.duplicate(true)})
 	_sync_renderer()
+
+func _renderer_failed(message: String) -> void:
+	if DisplayServer.get_name() == "headless":
+		return
+	if not is_instance_valid(renderer_alert):
+		renderer_alert = AcceptDialog.new()
+		renderer_alert.title = "Renderer stopped"
+		add_child(renderer_alert)
+	renderer_alert.dialog_text = message + "\n\nThe Layout view stays available. Renderer log: " + renderer.log_path
+	if not renderer_alert.visible:
+		renderer_alert.popup_centered()
 
 func _renderer_response(response: Dictionary) -> void:
 	if response.get("ok", false) and response.get("request_op") == "frame" and is_instance_valid(render_settings_dialog) and render_settings_dialog.visible:

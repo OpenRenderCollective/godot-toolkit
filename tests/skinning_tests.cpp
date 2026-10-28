@@ -1,4 +1,5 @@
 #include "document.h"
+#include "scene_view.h"
 #include <chrono>
 #include <cmath>
 #include <fstream>
@@ -25,13 +26,14 @@ GfMatrix4d matrix(const Json& values) {
   return result;
 }
 GfVec3d vector(const Json& value, int start = 0) { return {value[start].get<double>(), value[start+1].get<double>(), value[start+2].get<double>()}; }
-const Json& mesh(const Json& scene, const std::string& path) {
-  for (const auto& mesh : scene["meshes"]) if (mesh["id"] == path + "/mesh") return mesh;
+Json mesh(const Json& scene, const std::string& path) {
+  for (const auto& mesh : scene["meshes"]) if (mesh["id"] == path + "/mesh") return editor::expanded_mesh(scene, mesh);
   throw std::runtime_error("Expected skinned mesh was not composed: " + path);
 }
 void pose(const Json& scene) {
   check(scene["warnings"].empty() && scene["meshes"].size() == 2, "Both skinned instances must compose without warnings");
-  const auto& a = mesh(scene, first); const auto& b = mesh(scene, second);
+  const auto a = mesh(scene, first); const auto b = mesh(scene, second);
+  check(scene["prototypes"].size() == 2, "Different skeleton poses must not share a geometry prototype");
   check(a["skinned"].get<bool>() && b["skinned"].get<bool>(), "Animated and rest-pose meshes must both use their skeletons");
   check(a["skeleton"] == first + "/skel" && b["skeleton"] == second + "/skel", "Overlay bindings must identify each skeleton instance");
   check(scene["skeletons"].size() == 2, "Scene must retain separate skeleton poses");
@@ -163,7 +165,7 @@ void real_capture(const fs::path& capture) {
     for (const auto& point : points) world_points.push_back(skeleton_world.Transform(GfVec3d(point)));
     const auto mesh_world = matrix(mesh["transform"]);
     // Every emitted vertex must match an evaluated source point in world space.
-    for (const auto& surface : mesh["surfaces"]) for (const auto& vertex : surface["vertices"]) {
+    for (const auto& surface : editor::expanded_mesh(scene, mesh)["surfaces"]) for (const auto& vertex : surface["vertices"]) {
       const auto actual = mesh_world.Transform(vector(vertex));
       bool found = false;
       for (const auto& point : world_points)

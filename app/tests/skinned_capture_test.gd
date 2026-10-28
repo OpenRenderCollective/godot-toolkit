@@ -13,7 +13,7 @@ func _initialize() -> void:
 		"op": "create", "capture": ProjectSettings.globalize_path("res://../tests/fixtures/skinned/capture.usda"),
 		"path": directory.path_join("work.usda")})))
 	check(result.get("ok", false), "Skinned capture project must load")
-	var response: Dictionary = JSON.parse_string(document.execute(JSON.stringify({"op": "scene"})))
+	var response: Dictionary = document.execute_data(JSON.stringify({"op": "scene"}))
 	check(response.get("ok", false), "Skeleton scene must compose")
 	var scene: Dictionary = response.get("result", {})
 	check(scene.get("warnings", []).is_empty(), "Skeleton scene must not report composition warnings")

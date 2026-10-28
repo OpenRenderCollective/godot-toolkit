@@ -8,8 +8,8 @@ func check(condition: bool, message: String) -> void:
 		push_error(message)
 		failures += 1
 
-func mesh_data(path: String, transform: Transform3D, surface: Dictionary) -> Dictionary:
-	return {"id": path, "source_path": "/prototype/mesh", "surfaces": [surface], "transform": [
+func mesh_data(path: String, transform: Transform3D) -> Dictionary:
+	return {"id": path, "source_path": "/prototype/mesh", "prototype": 0, "transform": [
 		transform.basis.x.x, transform.basis.x.y, transform.basis.x.z, 0,
 		transform.basis.y.x, transform.basis.y.y, transform.basis.y.z, 0,
 		transform.basis.z.x, transform.basis.z.y, transform.basis.z.z, 0,
@@ -17,9 +17,9 @@ func mesh_data(path: String, transform: Transform3D, surface: Dictionary) -> Dic
 
 func _initialize() -> void:
 	var geometry := LayoutGeometry.new()
-	var surface := {"vertices": [[-1,-1,0], [1,-1,0], [0,1,0]], "indices": [0,1,2]}
+	var prototypes := [{"surfaces": [{"positions": PackedVector3Array([Vector3(-1,-1,0), Vector3(1,-1,0), Vector3(0,1,0)]), "indices": PackedInt32Array([0,1,2])}]}]
 	var near_transform := Transform3D(Basis.from_scale(Vector3(-2, 0.5, 1)), Vector3(0, 0, 2))
-	var data := {"meshes": [mesh_data("/far", Transform3D.IDENTITY, surface), mesh_data("/near", near_transform, surface.duplicate(true))]}
+	var data := {"prototypes": prototypes, "meshes": [mesh_data("/far", Transform3D.IDENTITY), mesh_data("/near", near_transform)]}
 	geometry.rebuild(data)
 	check(geometry.pick(Vector3(0,0,5), Vector3.FORWARD) == "/near", "Picking must find the nearest transformed triangle, regardless of instance order")
 	var hit: Dictionary = geometry.raycast(Vector3(0,0,5), Vector3.FORWARD)
@@ -31,10 +31,10 @@ func _initialize() -> void:
 	check(geometry.entries[0].geometry == geometry.entries[1].geometry, "Repeated instances must share GPU geometry and picking BVH")
 	check(geometry.entries[1].bounds == near_transform * geometry.entries[1].geometry.mesh.get_aabb(), "Framing bounds must include the instance transform")
 	check(geometry.entries[1].matches("/prototype"), "Selecting a shared prototype must highlight its instances")
-	data.meshes = [mesh_data("/small", Transform3D(Basis.from_scale(Vector3.ONE * 0.001), Vector3.ZERO), surface)]
+	data.meshes = [mesh_data("/small", Transform3D(Basis.from_scale(Vector3.ONE * 0.001), Vector3.ZERO))]
 	geometry.rebuild(data)
 	check(geometry.pick(Vector3(0,0,1), Vector3.FORWARD) == "/small", "Small unit-converted meshes must remain pickable")
-	data.meshes = [mesh_data("/moved", Transform3D(Basis.IDENTITY, Vector3(10,0,0)), surface)]
+	data.meshes = [mesh_data("/moved", Transform3D(Basis.IDENTITY, Vector3(10,0,0)))]
 	geometry.rebuild(data)
 	check(geometry.pick(Vector3(0,0,5), Vector3.FORWARD).is_empty(), "An updated snapshot must discard old picking geometry")
 	check(geometry.pick(Vector3(10,0,5), Vector3.FORWARD) == "/moved", "An updated snapshot must use the new transform")

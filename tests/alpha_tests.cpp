@@ -1,4 +1,5 @@
 #include "document.h"
+#include "scene_view.h"
 #include <chrono>
 #include <fstream>
 #include <iostream>
@@ -18,7 +19,7 @@ int main() {
     const auto& cutout = original.at("meshes").at(0);
     const auto& blended = original.at("meshes").at(1);
     const auto& opaque = original.at("meshes").at(2);
-    check(cutout.at("surfaces") == blended.at("surfaces") && cutout.at("surfaces") == opaque.at("surfaces"), "Shared mesh geometry must remain reusable across different alpha states");
+    check(original.at("prototypes").size() == 2 && cutout.at("prototype") == blended.at("prototype") && cutout.at("prototype") == opaque.at("prototype"), "Shared mesh geometry must remain reusable across different alpha states");
     check(cutout.at("alpha_state").at("alphaTestEnabled") && cutout.at("alpha_state").at("alphaTestCompareOp") == 4 && cutout.at("alpha_state").at("alphaTestReferenceValue") == 128, "Capture cutout state must reach the instance");
     check(blended.at("alpha_state").at("alphaBlendEnabled") && blended.at("alpha_state").at("srcColorBlendFactor") == 6 && !opaque.at("alpha_state").at("alphaTestEnabled").get<bool>(), "Blend/opaque states must remain independent");
     check(original.at("materials").at(0).at("use_legacy_alpha") && original.at("materials").at(0).at("alpha_test") == 7, "MDL defaults and unsigned enum inputs must be honored");
@@ -40,7 +41,7 @@ int main() {
     opacity.Set(VtFloatArray{0.f, 0.5f, 1.f}); opacity.SetIndices(VtIntArray{0, 1, 2, 1});
     auto color = primvars.CreatePrimvar(TfToken("displayColor"), SdfValueTypeNames->Color3fArray, UsdGeomTokens->constant);
     color.Set(VtVec3fArray{GfVec3f(1, 0.5f, 0)});
-    const auto colored = doc.scene().at("meshes").at(0).at("surfaces").at(0);
+    const auto colored = editor::expanded_mesh(doc.scene(), 0).at("surfaces").at(0);
     for (size_t i = 0; i < colored.at("vertices").size(); ++i) {
       const auto& point = colored.at("vertices").at(i);
       const uint32_t packed = colored.at("colors").at(i);

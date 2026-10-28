@@ -2,7 +2,7 @@
 
 A standalone Godot application for authoring RTX Remix replacements in OpenUSD. The document stays in USD; a separate Remix or OpenRemix worker renders the viewport. It does not use Omniverse Kit.
 
-This is an initial implementation, not full Toolkit parity. The embedded Vulkan viewport currently targets Linux x86_64. The editor and worker have Windows code paths, but Windows shared-frame transport and Windows builds have not been validated.
+This is an initial implementation, not full Toolkit parity. The embedded Vulkan viewport targets Linux x86_64 and, with a Remix Plus runtime, Windows x64. Other Windows runtimes use a separate preview window.
 
 ## Build and run
 
@@ -215,7 +215,7 @@ Unsupported USD content is retained when opening and saving a project. The previ
 
 `native/document.cpp` owns the OpenUSD stage, layers, edit transactions, and packaging. `native/ingestion.cpp` converts source assets into staged USD assets before publishing them. The GDExtension exposes this to the standalone UI in `app/scripts` and runs ingestion on a background thread. Command results pass directly into Godot dictionaries and arrays, avoiding a full JSON string and Godot's signed 32-bit string/parser limit when opening large captures. Texture conversion uses Godot's codecs and compressors.
 
-`native/scene.cpp` composes visible geometry and lighting into a renderer snapshot. `native/renderer_main.cpp` creates Remix SDK materials/meshes/lights and submits instances each frame. Repeated geometry within a snapshot shares a Remix mesh. Light edits send a small lighting snapshot and update only changed lights, preserving Remix mesh/material resources and the Layout geometry/picking cache. This includes light creation, deletion, and undo/redo; edits to lights with geometry descendants use the full scene path. Editor lights remain dynamic so repeated edits keep updating their illumination. Invalid captured UV components use zero in the preview without changing the USD assets. Geometry changes send complete JSON snapshots, encoded in small batches into bounded IPC frames without constructing a single scene-sized string. Transfers can exceed both 64 MiB and 2 GiB. Protocol v2 uses the high bit of each little-endian length header to mark continuation frames; a message is decoded and applied only after its final frame arrives. The editor and worker must be updated together. Snapshots still need to fit in memory; incremental binary geometry streaming and large-capture performance work remain.
+`native/scene.cpp` composes visible geometry and lighting into a renderer snapshot. `native/renderer_main.cpp` creates Remix SDK materials/meshes/lights and submits instances each frame. Snapshots list each distinct geometry once under `prototypes`, as indexed float32/int32 buffers grouped into per-material surfaces; `meshes` are instances that name a prototype and carry their own transform, alpha state, category flags per surface and skeleton. Instances share a prototype when their points, topology, primvars, orientation, skinned pose and material bindings are identical. Instances of a prototype with equal category groups share a Remix mesh. Light edits send a small lighting snapshot and update only changed lights, preserving Remix mesh/material resources and the Layout geometry/picking cache. This includes light creation, deletion, and undo/redo; edits to lights with geometry descendants use the full scene path. Editor lights remain dynamic so repeated edits keep updating their illumination. Invalid captured UV components use zero in the preview without changing the USD assets. Geometry changes send complete snapshots in bounded IPC frames without constructing a single scene-sized string. Transfers can exceed both 64 MiB and 2 GiB. Protocol v3 uses the high bit of each little-endian length header to mark continuation frames. A message is a chain of JSON text in which binary buffers appear as `{"$buffer": index, "type": name}`; when its top-level `buffers` array lists their byte lengths, a second chain carries the concatenated buffers. A message is decoded and applied only after its final frame arrives. The editor and worker must be updated together. Snapshots still need to fit in memory, and every geometry edit still resends the whole snapshot.
 
 The layout view uploads each unique mesh to Godot once per scene snapshot and draws wireframes on the GPU. It caches the resulting viewport image until the camera, selection, scene, or view size changes. Repeated instances share GPU geometry and a picking BVH, built lazily on first use. Selection first rejects mesh bounding boxes, then queries the native triangle BVH; framing uses cached world bounds. Large snapshots still take time to compose and upload when the scene changes, but orbiting does not walk their triangles in GDScript.
 
@@ -239,9 +239,15 @@ meson compile -C _Comp64Release d3d9
 meson install -C _Comp64Release --no-rebuild --tags output
 ```
 
-This stages the runtime in `_output`. The two narrow linker exclusions handle missing vendor PDB files and an unused delay-load declaration; other warnings remain errors. Build the `d3d9` target explicitly: the optional Hydra demo application at this revision has a separate `LNK4098` C-runtime conflict. The standalone Godot editor's Windows viewport transport is still unvalidated.
+This stages the runtime in `_output`. The two narrow linker exclusions handle missing vendor PDB files and an unused delay-load declaration; other warnings remain errors. Build the `d3d9` target explicitly: the optional Hydra demo application at this revision has a separate `LNK4098` C-runtime conflict.
 
-Windows currently has a separate native Remix preview window fallback. Windows external memory/handle transport and embedded viewport validation are still outstanding. The portable application bundle currently targets Linux only.
+The embedded Windows viewport needs a runtime that exports its output image through `remixapi_ConfigureExternalFrame`, which [Remix Plus](https://github.com/Kim2091/dxvk-remix) provides from rc2. Build the renderer worker against that runtime's API headers:
+
+```powershell
+cmake -B build -DREMIX_API_INCLUDE_DIR=/path/to/remix-plus/public/include -DREMIX_PLUS_API=ON
+```
+
+The runtime shares the image and two semaphores with the editor as Vulkan external memory (Win32 NT handles). With Remix Plus, the worker also draws the scene through retained instances, one call per frame. Other Windows runtimes, including OpenRemix, fall back to a separate native preview window until they provide an equivalent export. The portable application bundle currently targets Linux only.
 
 ## Validation
 

@@ -1,4 +1,5 @@
 #include "document.h"
+#include "scene_view.h"
 #include <fstream>
 #include <iostream>
 #include <chrono>
@@ -184,7 +185,8 @@ int main() {
     check(!doc.describe()["dirty"].get<bool>(), "New project should start clean");
     auto scene = doc.scene();
     check(scene["meshes"].size() == 2, "Capture must render two instances, not its hidden prototype");
-    check(scene["meshes"][0]["surfaces"][0]["indices"].size() == 6, "Quad must triangulate to two faces");
+    check(editor::expanded_mesh(scene, 0)["surfaces"][0]["indices"].size() == 6, "Quad must triangulate to two faces");
+    check(scene["prototypes"].size() == 1 && scene["meshes"][0]["prototype"] == scene["meshes"][1]["prototype"], "Capture instances must share one geometry prototype");
     const std::string instance = "/RootNode/instances/inst_0123456789ABCDEF_0";
     const std::string anchor = "/RootNode/meshes/mesh_0123456789ABCDEF";
     check(doc.inspect(instance)["anchor"] == anchor, "Instance must resolve to its captured hash anchor");

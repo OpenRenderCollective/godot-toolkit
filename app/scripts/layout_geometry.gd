@@ -1,38 +1,21 @@
 extends RefCounted
 
-# Geometry is prepared only when the USD snapshot changes. Repeated capture
-# instances share both the GPU mesh and the lazily built picking BVH.
+# Geometry is prepared only when the USD snapshot changes. Instances of one
+# scene prototype share both the GPU mesh and the lazily built picking BVH.
 class Geometry:
-	var surfaces: Array
 	var mesh: ArrayMesh
 	var triangles: TriangleMesh
 
-	func _init(source: Array) -> void:
-		surfaces = source
-		var vertex_count := 0
-		var index_count := 0
-		for surface in surfaces:
-			vertex_count += surface.vertices.size()
-			index_count += surface.indices.size()
-		var vertices := PackedVector3Array()
-		var indices := PackedInt32Array()
-		vertices.resize(vertex_count)
-		indices.resize(index_count)
-		var vertex_offset := 0
-		var index_offset := 0
-		for surface in surfaces:
-			for i in range(surface.vertices.size()):
-				var vertex: Array = surface.vertices[i]
-				vertices[vertex_offset + i] = Vector3(vertex[0], vertex[1], vertex[2])
-			for i in range(surface.indices.size()):
-				indices[index_offset + i] = vertex_offset + int(surface.indices[i])
-			vertex_offset += surface.vertices.size()
-			index_offset += surface.indices.size()
+	func _init(prototype: Dictionary) -> void:
 		mesh = ArrayMesh.new()
-		if index_count > 0:
+		for surface in prototype.get("surfaces", []):
+			var positions: PackedVector3Array = surface.positions
+			var indices: PackedInt32Array = surface.indices
+			if positions.is_empty() or indices.is_empty():
+				continue
 			var arrays := []
 			arrays.resize(Mesh.ARRAY_MAX)
-			arrays[Mesh.ARRAY_VERTEX] = vertices
+			arrays[Mesh.ARRAY_VERTEX] = positions
 			arrays[Mesh.ARRAY_INDEX] = indices
 			mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
 
@@ -57,21 +40,13 @@ var entries: Array[Entry] = []
 
 func rebuild(scene: Dictionary) -> void:
 	entries.clear()
+	var prototypes: Array = scene.get("prototypes", [])
 	var shared := {}
 	for data in scene.get("meshes", []):
-		var surfaces: Array = data.surfaces
-		var key := hash(surfaces)
-		var geometry: Geometry
-		# Compare on hash hits as well, so a collision cannot substitute geometry.
-		for candidate: Geometry in shared.get(key, []):
-			if candidate.surfaces == surfaces:
-				geometry = candidate
-				break
-		if geometry == null:
-			geometry = Geometry.new(surfaces)
-			if not shared.has(key):
-				shared[key] = []
-			shared[key].append(geometry)
+		var index := int(data.prototype)
+		if not shared.has(index):
+			shared[index] = Geometry.new(prototypes[index])
+		var geometry: Geometry = shared[index]
 		if geometry.mesh.get_surface_count() == 0:
 			continue
 		var entry := Entry.new()

@@ -43,14 +43,16 @@ func _run() -> void:
 	if "--light-below" in OS.get_cmdline_user_args():
 		app._command({"op": "transform", "path": app.selection, "translation": [0, -3, 0]})
 	app.viewport.frame_selection(true)
-	# Captured NaN/Inf UVs become null in JSON and must not abort the scene load.
-	app.last_scene.meshes[0].surfaces[0].vertices[0][6] = null
-	app.last_scene.meshes[0].surfaces[0].vertices[1][7] = null
+	# Captured NaN/Inf UVs must not abort the scene load.
+	var uvs: PackedVector2Array = app.last_scene.prototypes[0].surfaces[0].uvs
+	uvs[0] = Vector2(NAN, uvs[0].y); uvs[1] = Vector2(uvs[1].x, INF)
+	app.last_scene.prototypes[0].surfaces[0].uvs = uvs
 	if not restarting:
 		app.last_scene.materials.append({"id": "smoke_emission", "albedo": [1, 0.2, 0.1], "emissive": [1, 0.2, 0.1], "emissive_intensity": 10})
 		for mesh in app.last_scene.meshes:
 			mesh.double_sided = false
-			for surface in mesh.surfaces:
+		for prototype in app.last_scene.prototypes:
+			for surface in prototype.surfaces:
 				surface.material = "smoke_emission"
 	app.renderer.response_received.connect(_response)
 	app.renderer.status_changed.connect(func(message: String): print(message))
@@ -66,7 +68,12 @@ func _response(response: Dictionary) -> void:
 		app.renderer.send({"op": "settings", "settings": {"rtx.debugView.debugViewIdx": str(diagnostic_views[0])}})
 	if response.get("request_op") == "frame":
 		presented += 1
-		if presented == 8:
+		# After the restart only the spot light lights the scene. Resending the
+		# scene recreates its lights, which must survive the replaced ones; the
+		# capture waits until temporal history no longer holds the old light.
+		if restarting and presented == 4 and "--diagnostics" not in OS.get_cmdline_user_args():
+			app.renderer.send({"op": "scene", "scene": app.last_scene})
+		if presented == (60 if restarting and "--diagnostics" not in OS.get_cmdline_user_args() else 8):
 			_capture.call_deferred()
 
 func _capture() -> void:
@@ -101,6 +108,17 @@ func _capture() -> void:
 		app.renderer.stop_worker()
 		quit(1)
 		return
+	# Runtimes that log their light BVH builds report the light count the frame used.
+	var analytic: int = app.last_scene.lights.filter(func(light: Dictionary): return light.type != "DomeLight").size()
+	var built := -1
+	for line in FileAccess.get_file_as_string(app.renderer.log_path).split("\n"):
+		if line.contains("[LightBVH] build") and line.contains("lights="):
+			built = line.get_slice("lights=", 1).get_slice(" ", 0).to_int()
+	if built >= 0 and built != analytic:
+		push_error("Remix uses %d of the scene's %d lights" % [built, analytic])
+		app.renderer.stop_worker()
+		quit(1)
+		return
 	if not restarting:
 		var worker_pid: int = app.renderer.process.pid
 		app.render_toggle.button_pressed = false
@@ -129,8 +147,8 @@ func _capture() -> void:
 		restarting = true
 		presented = 0
 		app.last_scene.materials.clear()
-		for mesh in app.last_scene.meshes:
-			for surface in mesh.surfaces:
+		for prototype in app.last_scene.prototypes:
+			for surface in prototype.surfaces:
 				surface.material = "default"
 		app.render_toggle.button_pressed = false
 		app.render_toggle.button_pressed = true

@@ -199,28 +199,45 @@ std::optional<uint64_t> CaptureCategories::texture_hash(const UsdShadeMaterial& 
 }
 
 uint32_t CaptureCategories::flags(const UsdPrim& mesh, const UsdShadeMaterial& material) {
-  uint32_t baseline = 0, overrides = 0, override_mask = 0;
-  std::vector<UsdPrim> ancestors;
-  for (auto prim = mesh; prim && !prim.IsPseudoRoot(); prim = prim.GetParent()) ancestors.push_back(prim);
-  std::optional<uint64_t> geometry;
-  for (auto i = ancestors.rbegin(); i != ancestors.rend(); ++i) {
-    const auto name = i->GetName().GetString();
+  static const auto category_names = [] {
+    std::vector<std::pair<TfToken, const Category*>> names;
+    for (const auto& category : categories) names.emplace_back(TfToken(std::string("remix_category:") + category.attribute), &category);
+    return names;
+  }();
+  // Each prim's own opinions are shared by every mesh beneath it.
+  auto opinion = [&](const UsdPrim& prim) -> const PrimOpinion& {
+    auto [entry, inserted] = prims_.try_emplace(prim.GetPath());
+    if (!inserted) return entry->second;
+    auto& result = entry->second;
+    const auto& name = prim.GetName().GetString();
     if ((name.rfind("mesh_", 0) == 0 || name.rfind("inst_", 0) == 0) && name.size() >= 21)
-      geometry = hash_value(name.substr(5, 16));
-    for (const auto& category : categories) {
-      const auto attr = i->GetAttribute(TfToken(std::string("remix_category:") + category.attribute));
+      result.geometry = hash_value(name.substr(5, 16));
+    for (const auto& [token, category] : category_names) {
+      const auto attr = prim.GetAttribute(token);
       if (!attr) continue;
+      const auto bit = category->bit;
       for (const auto& spec : attr.GetPropertyStack()) {
         if (!spec->HasDefaultValue()) continue;
         const auto value = spec->GetDefaultValue();
         const bool enabled = value.IsHolding<bool>() && value.Get<bool>();
         const bool captured = capture_layers_.count(spec->GetLayer()->GetIdentifier());
-        auto& bits = captured ? baseline : overrides;
-        bits = (bits & ~category.bit) | (enabled ? category.bit : 0);
-        if (!captured) override_mask |= category.bit;
+        (captured ? result.captured_mask : result.override_mask) |= bit;
+        (captured ? result.captured_values : result.override_values) |= enabled ? bit : 0;
         break;
       }
     }
+    return result;
+  };
+  uint32_t baseline = 0, overrides = 0, override_mask = 0;
+  std::vector<UsdPrim> ancestors;
+  for (auto prim = mesh; prim && !prim.IsPseudoRoot(); prim = prim.GetParent()) ancestors.push_back(prim);
+  std::optional<uint64_t> geometry;
+  for (auto i = ancestors.rbegin(); i != ancestors.rend(); ++i) {
+    const auto& own = opinion(*i);
+    if (own.geometry) geometry = own.geometry;
+    baseline = (baseline & ~own.captured_mask) | own.captured_values;
+    overrides = (overrides & ~own.override_mask) | own.override_values;
+    override_mask |= own.override_mask;
   }
   uint32_t mask = 0, matched = 0;
   if (auto texture = texture_hash(material)) {

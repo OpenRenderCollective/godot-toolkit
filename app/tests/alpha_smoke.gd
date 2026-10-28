@@ -121,9 +121,12 @@ func run() -> void:
 		if not String(mesh.id).ends_with("inst_0123456789ABCDEF_1/mesh"): continue
 		mesh.alpha_state.textureAlphaArg2Source = 2
 		mesh.alpha_state.textureAlphaOperation = 3
-		for surface in mesh.surfaces:
-			surface["colors"] = []
-			surface.colors.resize(surface.vertices.size()); surface.colors.fill(0x00ffffff)
+		# Instances share prototypes; give this one its own colored copy.
+		var prototype: Dictionary = scene.prototypes[int(mesh.prototype)].duplicate(true)
+		for surface in prototype.surfaces:
+			var colors := PackedInt32Array(); colors.resize(surface.positions.size()); colors.fill(0x00ffffff)
+			surface["colors"] = colors
+		mesh.prototype = scene.prototypes.size(); scene.prototypes.append(prototype)
 	app.renderer.send({"op": "scene", "scene": scene})
 	if not await settle(): await finish(); return
 	image = snapshot("vertex-opacity")
