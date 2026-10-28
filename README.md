@@ -2,7 +2,7 @@
 
 A standalone Godot application for authoring RTX Remix replacements in OpenUSD. The document stays in USD; a separate Remix or OpenRemix worker renders the viewport. It does not use Omniverse Kit.
 
-This is an initial implementation, not full Toolkit parity. The embedded Vulkan viewport targets Linux x86_64 and, with a Remix Plus runtime, Windows x64. Other Windows runtimes use a separate preview window.
+This is an initial implementation, not full Toolkit parity. The embedded Vulkan viewport targets Linux x86_64 and Windows x64, on Windows with OpenRemix or a Remix Plus runtime. Other Windows runtimes use a separate preview window.
 
 ## Build and run
 
@@ -22,6 +22,19 @@ To launch the already built app directly:
 ```sh
 .work/deps/godot/bin/godot.linuxbsd.editor.x86_64.llvm --path app
 ```
+
+### OpenRemix on Windows
+
+Build the toolkit from a Visual Studio x64 developer prompt (clang-cl is used for OpenRemix). `bootstrap.py deps`, `godot` and `editor` work as on Linux; Godot is built with Vulkan only. Point `openremix` at an OpenRemix checkout whose own Windows build has already fetched its dependencies (`_work/deps/windows/prefix`, or set `OPENREMIX_DEPS_ROOT`), or register an existing `remix.dll`:
+
+```powershell
+python scripts/bootstrap.py openremix --openremix-source C:\path\to\openremix
+python scripts/bootstrap.py openremix --openremix-source C:\path\to\openremix --openremix-library C:\path\to\remix.dll
+```
+
+Windows has no RPATH, so bootstrap copies the runtime with SDL3 and the toolkit's OpenUSD/TBB libraries into `.work/openremix-runtime` and records that `remix.dll` in `build/runtime_paths.json`. The runtime must export `remixapi_EditorConfigureSharedFrame` with NT handles (OpenRemix's `windows-editor-frame` change). The worker starts it headless, duplicates the frame's memory and semaphore handles into the editor, and Godot imports them as Vulkan external memory. There is no preview-window fallback for OpenRemix: a failed export is reported as an error.
+
+The first path-traced frames are empty while the runtime builds its pipelines in the background; a cold cache takes tens of seconds.
 
 ### OpenRemix on Linux
 
@@ -247,7 +260,7 @@ The embedded Windows viewport needs a runtime that exports its output image thro
 cmake -B build -DREMIX_API_INCLUDE_DIR=/path/to/remix-plus/public/include -DREMIX_PLUS_API=ON
 ```
 
-The runtime shares the image and two semaphores with the editor as Vulkan external memory (Win32 NT handles). With Remix Plus, the worker also draws the scene through retained instances, one call per frame. Other Windows runtimes, including OpenRemix, fall back to a separate native preview window until they provide an equivalent export. The portable application bundle currently targets Linux only.
+The runtime shares the image and two semaphores with the editor as Vulkan external memory (Win32 NT handles). With Remix Plus, the worker also draws the scene through retained instances, one call per frame. Other Windows runtimes fall back to a separate native preview window until they provide an equivalent export. OpenRemix exports its frame the same way (see above). The portable application bundle currently targets Linux only.
 
 ## Validation
 

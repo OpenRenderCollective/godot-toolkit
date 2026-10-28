@@ -14,7 +14,12 @@ set(REMIX_SOURCE_DIR "${CMAKE_SOURCE_DIR}/ref/dxvk-remix-gmod" CACHE PATH "Pinne
 set(REMIX_API_INCLUDE_DIR "${REMIX_SOURCE_DIR}/public/include" CACHE PATH "Remix API headers used by the renderer worker")
 option(REMIX_PLUS_API "Build the renderer worker against the Remix Plus API" OFF)
 set(OPENREMIX_SOURCE_DIR "${CMAKE_SOURCE_DIR}/.work/deps/openremix" CACHE PATH "OpenRemix source with editor and USD extensions")
-set(OPENREMIX_LIBRARY "${CMAKE_SOURCE_DIR}/.work/build/openremix/src/native/libremix.so" CACHE FILEPATH "OpenRemix runtime library")
+if(WIN32)
+  set(OPENREMIX_LIBRARY_DEFAULT "${CMAKE_SOURCE_DIR}/.work/build/openremix/src/native/remix.dll")
+else()
+  set(OPENREMIX_LIBRARY_DEFAULT "${CMAKE_SOURCE_DIR}/.work/build/openremix/src/native/libremix.so")
+endif()
+set(OPENREMIX_LIBRARY "${OPENREMIX_LIBRARY_DEFAULT}" CACHE FILEPATH "OpenRemix runtime library")
 # Development runtime discovery; portable launchers supply relocated paths.
 string(REPLACE "\\" "/" OPENREMIX_JSON_PATH "${OPENREMIX_LIBRARY}")
 file(GENERATE OUTPUT "${CMAKE_BINARY_DIR}/runtime_paths.json" CONTENT "{\"openremix\":\"${OPENREMIX_JSON_PATH}\"}\n")

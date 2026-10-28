@@ -8,6 +8,10 @@ var baseline: Dictionary
 var directory: String
 var deadline := 0
 var expecting_disconnect := false
+var checking := false
+# The path tracer prepares its pipelines asynchronously (tens of seconds on a cold
+# cache), so early frames may be empty. Keep checking before giving up.
+const FRAME_BUDGET := 8000
 
 func _initialize() -> void: run.call_deferred()
 
@@ -46,7 +50,9 @@ func response(value: Dictionary) -> void:
 
 func presented(_context: Dictionary) -> void:
 	frames += 1
-	if frames == 3: advance.call_deferred()
+	if frames >= 3 and not checking and (frames - 3) % 15 == 0:
+		checking = true
+		advance.call_deferred()
 
 func advance() -> void:
 	await RenderingServer.frame_post_draw
@@ -57,18 +63,24 @@ func advance() -> void:
 	for y in image.get_height():
 		for x in image.get_width():
 			if image.get_pixel(x, y).get_luminance() > 0.3: lit += 1
-	if lit < 8: fail("Shared image contains no lit geometry"); return
+	if lit < 8:
+		if frames < FRAME_BUDGET:
+			checking = false
+			return
+		fail("Shared image contains no lit geometry"); return
 	image.save_png(directory.path_join("phase-%d.png" % phase))
 	if app.selection != baseline.selection or app.state.revision != baseline.revision or app.viewport.camera() != baseline.camera or not app.state.dirty:
-		fail("Restart changed document, selection, camera or unsaved edits"); return
+		fail("Restart changed document, selection, camera or unsaved edits (selection %s/%s, revision %s/%s, camera %s/%s, dirty %s)" % [app.selection, baseline.selection, app.state.revision, baseline.revision, app.viewport.camera(), baseline.camera, app.state.dirty]); return
 	print("OpenRemix phase %d: %d shared frames; effective %s" % [phase, frames, app.renderer.effective_settings])
-	frames = 0; phase += 1
+	frames = 0; phase += 1; checking = false
+	# There is no Remix runtime to switch to on Windows: skip its two phases.
+	if phase == 4 and OS.get_name() == "Windows": phase = 6
 	deadline = Time.get_ticks_msec() + 600000
 	if phase == 1:
 		app._apply_render_settings({"backend": "pathtrace", "upscaler": "none", "width": 400, "height": 240})
 	elif phase == 2:
 		expecting_disconnect = true
-		OS.execute("/usr/bin/kill", ["-KILL", str(app.renderer.process["pid"])])
+		OS.kill(app.renderer.process["pid"])
 	elif phase == 3:
 		app._apply_render_settings({"backend": "raster", "upscaler": "none", "width": 400, "height": 240})
 	elif phase == 4:

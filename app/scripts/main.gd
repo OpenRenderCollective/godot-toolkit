@@ -846,7 +846,7 @@ func _start_renderer() -> void:
 			var paths = JSON.parse_string(FileAccess.get_file_as_string(path_file))
 			if paths is Dictionary and FileAccess.file_exists(str(paths.get(active, ""))): runtime_paths[active] = str(paths[active])
 	var remembered: String = runtime_paths.get(active, runtime_path if active == "remix" else "")
-	var built := root_directory.path_join(".work/build/openremix/src/native/libremix.so" if active == "openremix" else ".work/build/remix/src/linux/libremix.so")
+	var built := root_directory.path_join(".work/build/openremix/src/native/" + ("remix.dll" if OS.get_name() == "Windows" else "libremix.so") if active == "openremix" else ".work/build/remix/src/linux/libremix.so")
 	if not configured.is_empty():
 		_launch_renderer(configured)
 	elif not remembered.is_empty():

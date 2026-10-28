@@ -9,7 +9,9 @@
 #include "scene_buffers.h"
 #include <algorithm>
 #include <cmath>
+#include <cstring>
 #include <filesystem>
+#include <functional>
 #include <iostream>
 #include <map>
 #include <set>
@@ -136,9 +138,6 @@ public:
     const auto renderer = message.value("renderer", std::string("remix"));
     if (renderer != "remix" && renderer != "openremix") throw std::runtime_error("Unknown renderer");
     openremix_ = renderer == "openremix";
-#ifdef _WIN32
-    if (openremix_) throw std::runtime_error("The OpenRemix toolkit integration currently requires Linux");
-#endif
     auto path = native_path(message.at("library").get<std::string>());
     checked(remixapi_lib_loadRemixDllAndInitialize(path.c_str(), &api_, &library_), "Load runtime");
     remixapi_StartupInfo info{};
@@ -167,10 +166,12 @@ public:
 #endif
     remixapi_EditorStartupEXT editor{REMIXAPI_STRUCT_TYPE_EDITOR_STARTUP_EXT, nullptr, 1, true, true, true};
     if (openremix_) {
-#ifndef _WIN32
-      if (!dlsym(library_, "remixapi_EditorConfigureSharedFrame")) throw std::runtime_error("OpenRemix requires the editor integration build");
-#endif
+      if (!symbol("remixapi_EditorConfigureSharedFrame")) throw std::runtime_error("OpenRemix requires the editor integration build");
+#ifdef _WIN32
+      editor.headless = export_frame;
+#else
       editor.headless = message.contains("frame_channel");
+#endif
       info.pNext = &editor;
     }
     info.editorModeEnabled = true;
@@ -193,26 +194,28 @@ public:
       ray_reconstruction_ = dlss_ && (features.availableFeatures & REMIXAPI_FEATURE_DLSS_RAY_RECONSTRUCTION_BIT) != 0;
     }
 #endif
-#ifndef _WIN32
     if (openremix_) {
-      auto backend = reinterpret_cast<PFN_remixapi_GetBackendCapabilitiesEXT>(dlsym(library_, "remixapi_GetBackendCapabilitiesEXT"));
-      auto reconstruction = reinterpret_cast<remixapi_ErrorCode (*)(remixapi_ReconstructionDiagnosticsEXT*)>(dlsym(library_, "remixapi_GetReconstructionDiagnosticsEXT"));
-      auto denoising = reinterpret_cast<PFN_remixapi_GetDenoisingCapabilitiesEXT>(dlsym(library_, "remixapi_GetDenoisingCapabilitiesEXT"));
+      auto backend = reinterpret_cast<PFN_remixapi_GetBackendCapabilitiesEXT>(symbol("remixapi_GetBackendCapabilitiesEXT"));
+      auto reconstruction = reinterpret_cast<remixapi_ErrorCode (*)(remixapi_ReconstructionDiagnosticsEXT*)>(symbol("remixapi_GetReconstructionDiagnosticsEXT"));
+      auto denoising = reinterpret_cast<PFN_remixapi_GetDenoisingCapabilitiesEXT>(symbol("remixapi_GetDenoisingCapabilitiesEXT"));
       query_backend_ = backend; query_reconstruction_ = reconstruction;
-      query_denoising_ = reinterpret_cast<PFN_remixapi_GetDenoisingStatisticsEXT>(dlsym(library_, "remixapi_GetDenoisingStatisticsEXT"));
-      query_sharc_ = reinterpret_cast<PFN_remixapi_GetSharcStatisticsEXT>(dlsym(library_, "remixapi_GetSharcStatisticsEXT"));
-      query_shadows_ = reinterpret_cast<PFN_remixapi_GetShadowStatisticsEXT>(dlsym(library_, "remixapi_GetShadowStatisticsEXT"));
-      query_local_lights_ = reinterpret_cast<PFN_remixapi_GetLocalLightStatisticsEXT>(dlsym(library_, "remixapi_GetLocalLightStatisticsEXT"));
+      query_denoising_ = reinterpret_cast<PFN_remixapi_GetDenoisingStatisticsEXT>(symbol("remixapi_GetDenoisingStatisticsEXT"));
+      query_sharc_ = reinterpret_cast<PFN_remixapi_GetSharcStatisticsEXT>(symbol("remixapi_GetSharcStatisticsEXT"));
+      query_shadows_ = reinterpret_cast<PFN_remixapi_GetShadowStatisticsEXT>(symbol("remixapi_GetShadowStatisticsEXT"));
+      query_local_lights_ = reinterpret_cast<PFN_remixapi_GetLocalLightStatisticsEXT>(symbol("remixapi_GetLocalLightStatisticsEXT"));
       if (!backend || !reconstruction || !denoising) throw std::runtime_error("OpenRemix capability extensions are unavailable");
       remixapi_BackendCapabilitiesEXT caps{}; caps.structSize = sizeof(caps);
       checked(backend(&caps), "Query OpenRemix backends"); pathtrace_ = caps.supportedBackends & 2;
+      pathtrace_reason_ = caps.unavailableReason;
       remixapi_ReconstructionDiagnosticsEXT up{}; up.structSize = sizeof(up);
       checked(reconstruction(&up), "Query OpenRemix reconstruction"); dlss_ = up.capabilities & 2; ray_reconstruction_ = up.capabilities & 4;
+      reconstruction_reason_ = up.fallbackReason;
       remixapi_DenoisingCapabilitiesEXT denoise{}; denoise.structSize = sizeof(denoise);
       checked(denoising(&denoise), "Query OpenRemix temporal support"); fsr_ = pathtrace_ && denoise.taaSupported;
       nrd_ = denoise.reblurShSupported; taa_ = denoise.taaSupported;
       nis_ = false;
     }
+#ifndef _WIN32
     if (message.contains("frame_channel")) {
       auto configure = reinterpret_cast<ConfigureSharedFrame>(dlsym(library_, "remixapi_EditorConfigureSharedFrame"));
       if (!configure) throw std::runtime_error("Runtime lacks the editor shared-frame patch");
@@ -244,7 +247,11 @@ public:
     Json exported, export_error;
     if (export_frame) {
       try { exported = export_frame_to(message.at("frame_process").get<uint32_t>()); shared_ = true; }
-      catch (const std::exception& error) { export_error = error.what(); ShowWindow(window_, SW_SHOWNORMAL); }
+      catch (const std::exception& error) {
+        // OpenRemix runs without a swapchain here, so there is no window to fall back to.
+        if (openremix_) throw;
+        export_error = error.what(); ShowWindow(window_, SW_SHOWNORMAL);
+      }
     }
 #endif
     if (!openremix_) {
@@ -260,7 +267,7 @@ public:
     api_.SetUIState(REMIXAPI_UI_STATE_NONE);
     camera_ = {{"position", {0, 2, 5}}, {"forward", {0, 0, -1}}, {"up", {0, 1, 0}}, {"right", {1, 0, 0}}, {"fov", 60.0}};
     Json result{{"status", "ready"}, {"presentation", shared_ ? "shared_vulkan" : "native_window"}, {"width", width_}, {"height", height_},
-      {"capabilities", {{"dlss", dlss_}, {"ray_reconstruction", ray_reconstruction_}, { "nis", nis_}, {"fsr31", fsr_}, {"pathtrace", pathtrace_}, {"nrd", nrd_}, {"taa", taa_}, {"renderer", renderer}}}};
+      {"capabilities", {{"dlss", dlss_}, {"ray_reconstruction", ray_reconstruction_}, { "nis", nis_}, {"fsr31", fsr_}, {"pathtrace", pathtrace_}, {"pathtrace_unavailable", pathtrace_reason_}, {"reconstruction_unavailable", reconstruction_reason_}, {"nrd", nrd_}, {"taa", taa_}, {"renderer", renderer}}}};
 #ifdef _WIN32
     if (shared_) result["frame"] = exported;
     if (!export_error.is_null()) result["frame_error"] = export_error;
@@ -269,22 +276,58 @@ public:
     return result;
   }
 #ifdef _WIN32
-  // Exports the runtime's output image and semaphores into the editor process.
-  // The editor owns the duplicated NT handles; the worker closes its own.
-  Json export_frame_to(DWORD process_id) {
+  // The runtime's output image and semaphores, as NT handles this process owns.
+  struct RuntimeFrame {
+    uint32_t width = 0, height = 0, format = 0, memory_type = 0;
+    uint64_t allocation_size = 0;
+    uint8_t device_uuid[16]{};
+    HANDLE handles[3]{};
+    std::function<void()> release;
+    RuntimeFrame() = default;
+    RuntimeFrame(const RuntimeFrame&) = delete;
+    ~RuntimeFrame() { for (auto handle : handles) if (handle) CloseHandle(handle); }
+  };
+  void request_frame(RuntimeFrame& out) {
+    constexpr uint32_t rgba8_unorm = 37;
+    if (openremix_) {
+      // OpenRemix always exports RGBA8 at the requested size.
+      auto configure = reinterpret_cast<ConfigureSharedFrame>(symbol("remixapi_EditorConfigureSharedFrame"));
+      if (!configure) throw std::runtime_error("OpenRemix requires the editor integration build");
+      EditorSharedFrame frame;
+      frame.width = width_; frame.height = height_;
+      const int code = configure(&frame);
+      out.handles[0] = frame.memory_handle; out.handles[1] = frame.ready_handle; out.handles[2] = frame.released_handle;
+      if (code) throw std::runtime_error("Could not configure shared GPU output (" + std::to_string(code) + ")");
+      out.width = frame.width; out.height = frame.height; out.format = rgba8_unorm;
+      out.memory_type = frame.memory_type; out.allocation_size = frame.allocation_size;
+      std::memcpy(out.device_uuid, frame.device_uuid, sizeof(out.device_uuid));
+      return;
+    }
 #ifdef REMIX_PLUS_API
-    auto configure = reinterpret_cast<ConfigureExternalFrame>(GetProcAddress(library_, "remixapi_ConfigureExternalFrame"));
+    auto configure = reinterpret_cast<ConfigureExternalFrame>(symbol("remixapi_ConfigureExternalFrame"));
     if (!configure) throw std::runtime_error("The runtime does not export editor frames");
     remixapi_ExternalFrameEXT frame{};
     frame.sType = REMIXAPI_STRUCT_TYPE_EXTERNAL_FRAME_EXT; frame.version = REMIXAPI_EXTERNAL_FRAME_VERSION;
     auto code = configure(&frame);
-    HANDLE handles[]{frame.memoryHandle, frame.readySemaphore, frame.releasedSemaphore};
-    struct Owned { HANDLE* h; ~Owned() { for (int i = 0; i < 3; ++i) if (h[i]) CloseHandle(h[i]); } } owned{handles};
+    out.handles[0] = frame.memoryHandle; out.handles[1] = frame.readySemaphore; out.handles[2] = frame.releasedSemaphore;
     if (code == REMIXAPI_ERROR_CODE_FEATURE_UNAVAILABLE)
       throw std::runtime_error("The runtime cannot export editor frames on this GPU or with this output format");
     if (code != REMIXAPI_ERROR_CODE_SUCCESS) throw std::runtime_error("The runtime could not export editor frames (Remix code " + std::to_string(code) + ")");
+    out.release = [configure] { configure(nullptr); };
+    out.width = frame.width; out.height = frame.height; out.format = frame.format;
+    out.memory_type = frame.memoryTypeIndex; out.allocation_size = frame.allocationSize;
+    std::memcpy(out.device_uuid, frame.deviceUUID, sizeof(out.device_uuid));
+#else
+    throw std::runtime_error("This renderer build cannot export frames to the editor");
+#endif
+  }
+  // Exports the runtime's output image and semaphores into the editor process.
+  // The editor owns the duplicated NT handles; the worker closes its own.
+  Json export_frame_to(DWORD process_id) {
+    RuntimeFrame frame;
+    request_frame(frame);
     try {
-      if (!handles[0] || !handles[1] || !handles[2]) throw std::runtime_error("The runtime returned no frame handles");
+      if (!frame.handles[0] || !frame.handles[1] || !frame.handles[2]) throw std::runtime_error("The runtime returned no frame handles");
       constexpr uint32_t rgba8_unorm = 37;
       if (frame.format != rgba8_unorm) throw std::runtime_error("The runtime exported an unsupported frame format");
       if (frame.width != width_ || frame.height != height_)
@@ -294,21 +337,17 @@ public:
       if (!process) throw std::runtime_error("Could not open the editor process (error " + std::to_string(GetLastError()) + ")");
       struct Process { HANDLE h; ~Process() { CloseHandle(h); } } process_owner{process};
       HANDLE shared[3]{};
-      for (int i = 0; i < 3; ++i) if (!DuplicateHandle(GetCurrentProcess(), handles[i], process, &shared[i], 0, FALSE, DUPLICATE_SAME_ACCESS)) {
+      for (int i = 0; i < 3; ++i) if (!DuplicateHandle(GetCurrentProcess(), frame.handles[i], process, &shared[i], 0, FALSE, DUPLICATE_SAME_ACCESS)) {
         auto error = GetLastError();
         for (int j = 0; j < i; ++j) DuplicateHandle(process, shared[j], nullptr, nullptr, 0, FALSE, DUPLICATE_CLOSE_SOURCE);
         throw std::runtime_error("Could not share frame handles with the editor (error " + std::to_string(error) + ")");
       }
       static const char digits[] = "0123456789abcdef";
       std::string uuid;
-      for (auto byte : frame.deviceUUID) { uuid += digits[byte >> 4]; uuid += digits[byte & 15]; }
-      return {{"width", frame.width}, {"height", frame.height}, {"memory_type", frame.memoryTypeIndex}, {"allocation_size", frame.allocationSize},
+      for (auto byte : frame.device_uuid) { uuid += digits[byte >> 4]; uuid += digits[byte & 15]; }
+      return {{"width", frame.width}, {"height", frame.height}, {"memory_type", frame.memory_type}, {"allocation_size", frame.allocation_size},
         {"device_uuid", uuid}, {"memory", uint64_t(uintptr_t(shared[0]))}, {"ready", uint64_t(uintptr_t(shared[1]))}, {"released", uint64_t(uintptr_t(shared[2]))}};
-    } catch (...) { configure(nullptr); throw; }
-#else
-    (void)process_id;
-    throw std::runtime_error("This renderer build cannot export frames to the editor");
-#endif
+    } catch (...) { if (frame.release) frame.release(); throw; }
   }
 #endif
   void* symbol(const char* name) {
@@ -446,7 +485,7 @@ public:
     require_running();
     for (auto it = data.begin(); it != data.end(); ++it) {
       if (openremix_ && it.key().compare(0, 11, "rtx.native.") != 0) throw std::runtime_error("OpenRemix accepts only native renderer settings");
-      checked(api_.SetConfigVariable(it.key().c_str(), it.value().get<std::string>().c_str()), "Set render setting");
+      checked(api_.SetConfigVariable(it.key().c_str(), it.value().get<std::string>().c_str()), ("Set render setting " + it.key()).c_str());
     }
   }
   Json render_settings(const Json& data) {
@@ -733,6 +772,7 @@ private:
 #endif
   Json effective_settings_;
   studio::RenderSettings requested_settings_;
+  std::string pathtrace_reason_, reconstruction_reason_;
   bool openremix_ = false, pathtrace_ = false, fsr_ = false, nrd_ = false, taa_ = false;
   bool running_ = false;
   bool shared_ = false;
