@@ -1,7 +1,7 @@
 extends SceneTree
 
 # OpenRemix iridescence: a film authored in the inspector colours the shared
-# frame, and its flow animates it.
+# frame, its flow animates it, and the renderer's toggle turns it off.
 const Settings = preload("res://scripts/render_settings.gd")
 const SHADER := "/RootNode/Looks/mat_0123456789ABCDEF/Shader"
 var app: Control
@@ -98,6 +98,10 @@ func advance() -> void:
 				if (image.get_pixel(x, y) - flowing.get_pixel(x, y)).get_luminance() > 0.02 or absf(image.get_pixel(x, y).h - flowing.get_pixel(x, y).h) > 0.05: changed += 1
 		print("Flow changed %d pixels" % changed)
 		if changed < 50: fail("The film's flow did not animate"); return
+		# The renderer's Iridescence toggle turns every film off.
+		app.renderer.send({"op": "settings", "settings": {"rtx.native.pathtrace.iridescence": "0"}})
+	elif phase == 4:
+		if m.y > plain_chroma + 0.03: fail("Iridescence off still coloured the reflection (%.4f vs %.4f)" % [m.y, plain_chroma]); return
 		print("OpenRemix iridescence passed: " + directory)
 		app.renderer.stop_worker(); quit(0); return
 	frames = 0; phase += 1; checking = false
