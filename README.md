@@ -36,6 +36,8 @@ Windows has no RPATH, so bootstrap copies the runtime with SDL3 and the toolkit'
 
 The first path-traced frames are empty while the runtime builds its pipelines in the background; a cold cache takes tens of seconds.
 
+DLSS and Ray Reconstruction need NVIDIA's `dlss/<version>` folder beside the runtime. Staging copies it from `OPENREMIX_DLSS_DIR`, from a `dlss` folder next to the registered `remix.dll`, or from OpenRemix's `_work/packages/windows/bin/dlss`; without it the viewport uses FSR. OpenRemix starts DLSS only when a setting first requests it, so the worker offers it as available while the runtime reports that state, and the runtime's per-frame diagnostics show what actually runs.
+
 ### OpenRemix on Linux
 
 Use an OpenRemix checkout containing `remix_editor_ext.h` and the optional USD loader:

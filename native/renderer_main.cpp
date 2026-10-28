@@ -210,6 +210,9 @@ public:
       remixapi_ReconstructionDiagnosticsEXT up{}; up.structSize = sizeof(up);
       checked(reconstruction(&up), "Query OpenRemix reconstruction"); dlss_ = up.capabilities & 2; ray_reconstruction_ = up.capabilities & 4;
       reconstruction_reason_ = up.fallbackReason;
+      // OpenRemix initializes DLSS when a setting first requests it and reports that as its
+      // reason until then. Offer it; the per-frame diagnostics say what actually runs.
+      if (!dlss_ && reconstruction_reason_ == "DLSS will initialize when requested") dlss_ = ray_reconstruction_ = true;
       remixapi_DenoisingCapabilitiesEXT denoise{}; denoise.structSize = sizeof(denoise);
       checked(denoising(&denoise), "Query OpenRemix temporal support"); fsr_ = pathtrace_ && denoise.taaSupported;
       nrd_ = denoise.reblurShSupported; taa_ = denoise.taaSupported;
