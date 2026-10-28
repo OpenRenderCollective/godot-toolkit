@@ -97,12 +97,17 @@ uint32_t packed_color(const GfVec3f& color, float alpha) {
   // HardcodedVertex's color is VK_FORMAT_B8G8R8A8_UNORM.
   return byte(color[2]) | (byte(color[1]) << 8) | (byte(color[0]) << 16) | (byte(alpha) << 24);
 }
+// USD resolves to backslash paths on Windows; the snapshot uses '/' everywhere.
+std::string generic(std::string path) {
+  std::replace(path.begin(), path.end(), '\\', '/');
+  return path;
+}
 std::string texture(const UsdPrim& shader, const char* name, Json& warnings) {
   if (!shader) return {};
   const auto attr = shader.GetAttribute(TfToken(name));
   SdfAssetPath value;
   if (!attr || !attr.Get(&value) || value.GetAssetPath().empty()) return {};
-  if (!value.GetResolvedPath().empty()) return value.GetResolvedPath();
+  if (!value.GetResolvedPath().empty()) return generic(value.GetResolvedPath());
 
   // Captures made on Windows can contain backslashes even when opened on Linux.
   // Anchor the normalized identifier at the strongest authored value's layer:
@@ -116,7 +121,7 @@ std::string texture(const UsdPrim& shader, const char* name, Json& warnings) {
     anchor = spec->GetLayer()->GetIdentifier();
     auto identifier = SdfComputeAssetPathRelativeToLayer(spec->GetLayer(), normalized);
     auto resolved = ArGetResolver().Resolve(identifier);
-    if (!resolved.empty()) return resolved.GetPathString();
+    if (!resolved.empty()) return generic(resolved.GetPathString());
     // A missing strong opinion must not silently fall back to a weaker texture.
     break;
   }

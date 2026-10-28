@@ -141,8 +141,12 @@ void Document::require_stage() const {
   if (!stage_) throw std::runtime_error("Open a project first");
 }
 
-void Document::open(const fs::path& path) {
-  auto next = UsdStage::Open(fs::absolute(path).string());
+void Document::open(const fs::path& requested) {
+  // Open by the real location. Capture paths are stored relative to the workfile's
+  // directory, and ".." means something else through a symlink (a project linked into a
+  // game's mods folder), so USD and the capture list must both start from the target.
+  const auto path = fs::weakly_canonical(fs::absolute(requested));
+  auto next = UsdStage::Open(path.string());
   if (!next) throw std::runtime_error("Could not open USD file: " + path.string());
   if (is_capture(next->GetRootLayer())) throw std::runtime_error("This is a capture. Use New from capture to create writable project layers.");
   SdfLayerHandle target;
@@ -162,7 +166,7 @@ void Document::open(const fs::path& path) {
   stage_ = next;
   edit_layer_ = target;
   stage_->SetEditTarget(edit_layer_);
-  project_path_ = fs::absolute(path);
+  project_path_ = path;
   undo_.clear(); redo_.clear(); saved_layers_.clear();
   for (auto layer : stage_->GetLayerStack(false)) saved_layers_[layer->GetIdentifier()] = layer_text(layer);
   ++revision_;

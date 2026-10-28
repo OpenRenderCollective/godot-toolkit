@@ -111,7 +111,8 @@ def godot(jobs):
     patch(source, "godot-external-frame.patch")
     run(["scons", "platform=" + ("windows" if WINDOWS else "linuxbsd"), "target=editor", "arch=x86_64",
          "dev_build=no", "debug_symbols=no", "optimize=speed", "vulkan=yes", "opengl3=yes",
-         *([] if WINDOWS else ["use_llvm=yes"]), f"-j{jobs}"], cwd=source)
+         # The external-frame bridge is Vulkan-only; D3D12 and AccessKit need SDKs the Linux build doesn't.
+         *(["d3d12=no", "accesskit=no"] if WINDOWS else ["use_llvm=yes"]), f"-j{jobs}"], cwd=source)
 
 
 def materials(source):
@@ -169,13 +170,44 @@ def remix(jobs):
         ENV.update(saved)
 
 
+def openremix_library_path():
+    return WORK / "build/openremix/src/native" / ("remix.dll" if WINDOWS else "libremix.so")
+
+
+def openremix_deps_prefix(source):
+    return Path(os.environ.get("OPENREMIX_DEPS_ROOT", source / "_work/deps/windows/prefix"))
+
+
+def stage_openremix_runtime(library, source):
+    """Windows has no RPATH: the runtime loads its dependencies from its own folder.
+
+    Collect the DLL with SDL3 and the toolkit's OpenUSD/TBB libraries (the ones it
+    was built against) in one place and return the staged DLL's path."""
+    target = WORK / "openremix-runtime"
+    target.mkdir(parents=True, exist_ok=True)
+    sdl = openremix_deps_prefix(source) / "bin/SDL3.dll"
+    for path in [library, sdl if sdl.is_file() else library.parent / "SDL3.dll",
+                 *(DEPS / "usd/lib").glob("*.dll"), *(DEPS / "tbb2021/bin").glob("*.dll")]:
+        if path.is_file(): shutil.copy2(path, target / path.name)
+    shutil.copytree(DEPS / "usd/lib/usd", target / "usd", dirs_exist_ok=True)
+    # DLSS is optional: the runtime looks for dlss/<version>/ beside itself, and falls back without it.
+    for candidate in [os.environ.get("OPENREMIX_DLSS_DIR"), library.parent / "dlss", source / "_work/packages/windows/bin/dlss"]:
+        if candidate and Path(candidate).is_dir():
+            shutil.copytree(candidate, target / "dlss", dirs_exist_ok=True)
+            break
+    return target / library.name
+
+
+def register_openremix(library, source):
+    (ROOT / "build").mkdir(exist_ok=True)
+    if WINDOWS: library = stage_openremix_runtime(library, source)
+    (ROOT / "build/runtime_paths.json").write_text(json.dumps({"openremix": str(library.resolve())}) + "\n")
+
+
 def openremix(jobs, source, library=None):
-    if WINDOWS:
-        raise RuntimeError("The OpenRemix toolkit integration currently targets Linux")
     if library:
         if not library.is_file(): raise RuntimeError(f"OpenRemix library not found: {library}")
-        (ROOT / "build").mkdir(exist_ok=True)
-        (ROOT / "build/runtime_paths.json").write_text(json.dumps({"openremix": str(library.resolve())}) + "\n")
+        register_openremix(library, source)
         return
     if not (source / "public/include/remix/remix_editor_ext.h").exists():
         raise RuntimeError("Set --openremix-source to the OpenRemix checkout containing the editor/USD integration")
@@ -185,15 +217,25 @@ def openremix(jobs, source, library=None):
     compiler_files = list((WORK / "build/usd/CMakeFiles").glob("*/CMakeCXXCompiler.cmake"))
     if not compiler_files:
         raise RuntimeError("Build the OpenUSD dependency first: bootstrap.py deps")
-    gnu_stl = any('set(CMAKE_CXX_COMPILER_ID "GNU")' in path.read_text() for path in compiler_files)
-    saved = ENV.copy(); ENV.update(CC="clang", CXX="clang++")
+    gnu_stl = not WINDOWS and any('set(CMAKE_CXX_COMPILER_ID "GNU")' in path.read_text() for path in compiler_files)
+    saved = ENV.copy()
+    # Windows: clang-cl in the Visual Studio environment, as OpenRemix's own build uses.
+    ENV.update(CC="clang-cl", CXX="clang-cl") if WINDOWS else ENV.update(CC="clang", CXX="clang++")
+    options = ["-Dbuildtype=release", "-Dusd=true", f"-Dusd_gnu_stl={str(gnu_stl).lower()}",
+               f"-Dusd_root={DEPS / 'usd'}", f"-Dusd_tbb_root={DEPS / 'tbb2021'}",
+               f"-Djson_include={ROOT / 'build/_deps/json-src/include'}"]
+    if WINDOWS:
+        # SDL3 and the other native dependencies come from OpenRemix's own prefix.
+        prefix = openremix_deps_prefix(source)
+        if not prefix.is_dir():
+            raise RuntimeError(f"OpenRemix dependencies not found: {prefix}. Build OpenRemix once, or set OPENREMIX_DEPS_ROOT")
+        options += [f"-Ddeps_root={prefix}", "-Duse_system_sdl=true"]
+    else:
+        options += ["-Dgpu_tests=true"]
     try:
-        run([*args, build, source, "-Dbuildtype=release", "-Dusd=true", f"-Dusd_gnu_stl={str(gnu_stl).lower()}",
-             f"-Dusd_root={DEPS / 'usd'}", f"-Dusd_tbb_root={DEPS / 'tbb2021'}",
-             f"-Djson_include={ROOT / 'build/_deps/json-src/include'}", "-Dgpu_tests=true"])
+        run([*args, build, source, *options])
         run(["meson", "compile", "-C", build, "-j", jobs])
-        (ROOT / "build").mkdir(exist_ok=True)
-        (ROOT / "build/runtime_paths.json").write_text(json.dumps({"openremix": str(build / "src/native/libremix.so")}) + "\n")
+        register_openremix(openremix_library_path(), source)
     finally:
         ENV.clear(); ENV.update(saved)
 
@@ -235,7 +277,7 @@ def main():
             parser.error("Portable packaging currently supports Linux x86_64")
         if not (BIN / "patchelf").exists() and not shutil.which("patchelf"):
             run([BIN / "python", "-m", "pip", "install", "patchelf==0.17.2.4"])
-        run([sys.executable, ROOT / "scripts/package_portable.py", "--openremix-source", args.openremix_source, "--openremix-library", args.openremix_library or WORK / "build/openremix/src/native/libremix.so"])
+        run([sys.executable, ROOT / "scripts/package_portable.py", "--openremix-source", args.openremix_source, "--openremix-library", args.openremix_library or openremix_library_path()])
         return
     if args.target in ["all", "test", "gpu-test"]:
         ENV["REMIX_STUDIO_SETTINGS_DIR"] = tempfile.mkdtemp(prefix="studio-test-settings-", dir=WORK)

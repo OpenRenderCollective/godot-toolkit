@@ -281,20 +281,6 @@
     "step": 1
   },
   {
-    "key": "prism",
-    "label": "Prism tonemapping",
-    "group": "Display",
-    "default": true,
-    "hint": "Map high dynamic range scene values to display output."
-  },
-  {
-    "key": "gamma22",
-    "label": "Gamma 2.2 output",
-    "group": "Display",
-    "default": true,
-    "hint": "Apply the renderer output gamma transform."
-  },
-  {
     "key": "fsrSharpness",
     "label": "FSR sharpening",
     "group": "Display",

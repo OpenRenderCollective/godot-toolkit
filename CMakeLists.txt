@@ -3,6 +3,10 @@ project(GodotRemixEditor VERSION 0.1.0 LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+if(WIN32)
+  # windows.h would otherwise define min/max macros that break std::min/std::max.
+  add_compile_definitions(NOMINMAX)
+endif()
 option(REMIX_EDITOR_GODOT "Build the Godot extension" ON)
 option(REMIX_EDITOR_TESTS "Build native workflow tests" ON)
 set(GODOT_CPP_DIR "${CMAKE_SOURCE_DIR}/.work/deps/godot-cpp" CACHE PATH "godot-cpp checkout")
@@ -10,7 +14,12 @@ set(REMIX_SOURCE_DIR "${CMAKE_SOURCE_DIR}/ref/dxvk-remix-gmod" CACHE PATH "Pinne
 set(REMIX_API_INCLUDE_DIR "${REMIX_SOURCE_DIR}/public/include" CACHE PATH "Remix API headers used by the renderer worker")
 option(REMIX_PLUS_API "Build the renderer worker against the Remix Plus API" OFF)
 set(OPENREMIX_SOURCE_DIR "${CMAKE_SOURCE_DIR}/.work/deps/openremix" CACHE PATH "OpenRemix source with editor and USD extensions")
-set(OPENREMIX_LIBRARY "${CMAKE_SOURCE_DIR}/.work/build/openremix/src/native/libremix.so" CACHE FILEPATH "OpenRemix runtime library")
+if(WIN32)
+  set(OPENREMIX_LIBRARY_DEFAULT "${CMAKE_SOURCE_DIR}/.work/build/openremix/src/native/remix.dll")
+else()
+  set(OPENREMIX_LIBRARY_DEFAULT "${CMAKE_SOURCE_DIR}/.work/build/openremix/src/native/libremix.so")
+endif()
+set(OPENREMIX_LIBRARY "${OPENREMIX_LIBRARY_DEFAULT}" CACHE FILEPATH "OpenRemix runtime library")
 # Development runtime discovery; portable launchers supply relocated paths.
 string(REPLACE "\\" "/" OPENREMIX_JSON_PATH "${OPENREMIX_LIBRARY}")
 file(GENERATE OUTPUT "${CMAKE_BINARY_DIR}/runtime_paths.json" CONTENT "{\"openremix\":\"${OPENREMIX_JSON_PATH}\"}\n")
@@ -55,6 +64,14 @@ if(REMIX_EDITOR_GODOT)
     LIBRARY_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}/app/bin"
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}/app/bin"
     BUILD_RPATH "${PXR_LIB_DIR}")
+  if(WIN32)
+    # Windows has no RPATH, and Godot loads extensions without searching PATH:
+    # stage the USD, TBB and Assimp DLLs, and USD's plugin registry, beside the DLL.
+    add_custom_command(TARGET remix_editor POST_BUILD
+      COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_RUNTIME_DLLS:remix_editor> "${CMAKE_SOURCE_DIR}/app/bin"
+      COMMAND ${CMAKE_COMMAND} -E copy_directory "${PXR_CMAKE_DIR}/lib/usd" "${CMAKE_SOURCE_DIR}/app/bin/usd"
+      COMMAND_EXPAND_LISTS)
+  endif()
 endif()
 if(REMIX_EDITOR_TESTS)
   enable_testing()
