@@ -135,6 +135,43 @@
     "hint": "Thin-film interference colours on materials that have a film (soap bubbles, oil slicks, beetle shells). Off: those materials reflect without it."
   },
   {
+    "key": "caustics",
+    "label": "Caustics",
+    "group": "Sampling",
+    "default": true,
+    "hint": "Light through water and bumpy glass is focused by their normal maps' waves and bumps into caustics on what it lights."
+  },
+  {
+    "key": "causticsStrength",
+    "label": "Caustics strength",
+    "group": "Sampling",
+    "default": 0.4,
+    "hint": "How strongly the surface bends the light (0.4: as water and glass do). Used with Caustics on.",
+    "min": 0,
+    "max": 1,
+    "step": 0.01
+  },
+  {
+    "key": "causticsDepth",
+    "label": "Caustics focus depth (m)",
+    "group": "Sampling",
+    "default": 0.5,
+    "hint": "Caustics fade in over this depth behind the surface: shallow water and thin glass have none, as light has not yet been focused. 0: at once. Used with Caustics on.",
+    "min": 0,
+    "max": 4,
+    "step": 0.01
+  },
+  {
+    "key": "causticsContrast",
+    "label": "Caustics contrast",
+    "group": "Sampling",
+    "default": 1,
+    "hint": "Exaggerates the caustics: past 1, brighter lines and darker gaps (not physical; for surfaces whose waves barely focus the light). Used with Caustics on.",
+    "min": 0,
+    "max": 6,
+    "step": 0.01
+  },
+  {
     "key": "accumulate",
     "label": "Progressive reference rendering",
     "group": "Sampling",
