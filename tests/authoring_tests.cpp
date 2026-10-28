@@ -71,6 +71,10 @@ int main() {
     check(glass["kind"] == "translucent" && doc.inspect(material)["authoring"]["surface_model"] == "translucent",
           "Materials convert to translucent");
     check(fs::path(glass["albedo_texture"].get<std::string>()).filename() == "glass.dds", "Conversion keeps the material's texture");
+    // The film carries over: OpenRemix colours glass and water with it too.
+    check(glass.contains("iridescence") && !field(doc, shader, "openremix:iridescence:filmIor").is_null(), "Glass keeps its film");
+    check(field(doc, shader, "openremix:iridescence:structural").is_null() &&
+          field(doc, shader, "inputs:thin_film_thickness_from_albedo_alpha").is_null(), "Glass has no structural colour or thickness from alpha");
     check(field(doc, shader, "inputs:transmittance_measurement_distance")["disabled_by"] == "inputs:thin_walled",
           "A thin wall has no measurement distance");
     set(shader, "inputs:thin_walled", true); set(shader, "inputs:transmittance_measurement_distance", 4);

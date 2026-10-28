@@ -143,16 +143,22 @@ Json fields_for(const UsdPrim& selected) {
     choices(cutout, {0, 1, 2, 3, 4, 5, 6, 7}, {"Never", "Less", "Equal", "Less or equal", "Greater", "Not equal", "Greater or equal (cutout)", "Always (no cutout)"});
     cutout["disabled_by"] = "inputs:use_legacy_alpha_state";
     add("inputs:alpha_test_reference_value", "Cutout threshold (0–255)", "Opacity", "float", 0.f, 0, 255)["disabled_by"] = "inputs:use_legacy_alpha_state";
-    // AperturePBR's thin film, and OpenRemix's iridescence controls beyond it
-    // (attributes outside the MDL inputs, which other runtimes ignore).
+  }
+  // AperturePBR's thin film, and OpenRemix's iridescence controls beyond it
+  // (attributes outside the MDL inputs, which other runtimes ignore). On glass
+  // and water the whole film is OpenRemix's: AperturePBR_Translucent has none.
+  {
     add("inputs:enable_thin_film", "Enable iridescence", "Iridescence", "bool", false, 0, 1, "bool")
-      ["tooltip"] = "A thin-film coating whose interference colours the reflection, like a soap bubble or oil slick.";
+      ["tooltip"] = glass ? "A thin-film coating whose interference colours the reflection, like a soap bubble, while the light passing through takes the complementary colour. OpenRemix only."
+                          : "A thin-film coating whose interference colours the reflection, like a soap bubble or oil slick.";
     auto& thickness = add("inputs:thin_film_thickness_constant", "Thickness (nm)", "Iridescence", "float", 200.f, 0.001, 1500);
     thickness["enabled_by"] = "inputs:enable_thin_film"; thickness["disabled_by"] = "inputs:thin_film_thickness_from_albedo_alpha";
     thickness["tooltip"] = "Film thickness in nanometres. 200–600 gives vivid colours; thicker films fade to pastel.";
-    auto& from_alpha = add("inputs:thin_film_thickness_from_albedo_alpha", "Thickness from albedo alpha", "Iridescence", "bool", false, 0, 1, "bool");
-    from_alpha["enabled_by"] = "inputs:enable_thin_film";
-    from_alpha["tooltip"] = "Read the thickness from the base color texture's alpha (times 1500 nm). The material becomes fully opaque.";
+    if (!glass) {
+      auto& from_alpha = add("inputs:thin_film_thickness_from_albedo_alpha", "Thickness from albedo alpha", "Iridescence", "bool", false, 0, 1, "bool");
+      from_alpha["enabled_by"] = "inputs:enable_thin_film";
+      from_alpha["tooltip"] = "Read the thickness from the base color texture's alpha (times 1500 nm). The material becomes fully opaque.";
+    }
     auto openremix = [&](const char* name, const char* label, const char* group, const char* type, Json fallback,
                          double minimum, double maximum, const char* tooltip, const char* control = "number") {
       auto& field = add(name, label, group, type, fallback, minimum, maximum, control);
@@ -163,8 +169,9 @@ Json fields_for(const UsdPrim& selected) {
       "How much of the reflection is the film's.");
     openremix("openremix:iridescence:filmIor", "Film index of refraction", "Iridescence", "float", 1.5f, 1, 3,
       "Higher indices give stronger, more saturated colours (soap 1.33, oil 1.5, titanium oxide 2.4).");
-    openremix("openremix:iridescence:structural", "Structural colour", "Iridescence", "float", 0.f, 0, 1,
-      "Tints diffuse reflection with the film's colour too, like a beetle shell or butterfly wing, so rough surfaces shimmer.");
+    if (!glass)
+      openremix("openremix:iridescence:structural", "Structural colour", "Iridescence", "float", 0.f, 0, 1,
+        "Tints diffuse reflection with the film's colour too, like a beetle shell or butterfly wing, so rough surfaces shimmer.");
     openremix("openremix:iridescence:thicknessTexture", "Thickness texture", "Iridescence", "asset", "", 0, 1,
       "A map whose red channel spans the thickness range below, replacing the constant thickness.", "texture");
     openremix("openremix:iridescence:thicknessMin", "Texture thickness min (nm)", "Iridescence", "float", 100.f, 0, 2000,

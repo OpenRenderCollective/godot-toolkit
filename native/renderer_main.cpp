@@ -651,7 +651,10 @@ private:
     // Authored values are clamped to the extension's ranges.
     remixapi_MaterialIridescenceEXT film{};
     NativePath film_texture;
-    if (auto found = data.find("iridescence"); found != data.end() && data.value("kind", std::string("opaque")) != "translucent") {
+    // Glass and water take OpenRemix's film only: the API's own thin-film
+    // fields are opaque.
+    const bool translucent = data.value("kind", std::string("opaque")) == "translucent";
+    if (auto found = data.find("iridescence"); found != data.end() && (openremix_ || !translucent)) {
       const auto& f = *found;
       auto value = [&](const char* key, float fallback, float low, float high) {
         const float v = f.value(key, fallback);

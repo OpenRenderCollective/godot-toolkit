@@ -172,8 +172,8 @@ Json material_json(const UsdShadeMaterial& material, Json& warnings) {
   };
   // AperturePBR's thin film, with OpenRemix's iridescence attributes
   // (openremix:iridescence:*, outside the MDL inputs). As OpenRemix's
-  // usd/scene.cpp material_json.
-  if (!translucent && attribute(shader, "inputs:enable_thin_film", false))
+  // usd/scene.cpp material_json, glass and water included.
+  if (attribute(shader, "inputs:enable_thin_film", false))
     result["iridescence"] = {
       {"thickness", attribute(shader, "inputs:thin_film_thickness_constant", 200.0f)},
       {"from_alpha", attribute(shader, "inputs:thin_film_thickness_from_albedo_alpha", false)},
