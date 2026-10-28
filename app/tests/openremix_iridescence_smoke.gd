@@ -22,7 +22,7 @@ func run() -> void:
 	app = load("res://main.tscn").instantiate()
 	app.render_settings = Settings.new(directory.path_join("settings.json"))
 	app.render_settings.select_renderer("openremix")
-	app.render_settings.save_settings({"backend": "pathtrace", "upscaler": "none", "width": 320, "height": 180})
+	app.render_settings.save_settings({"backend": "pathtrace", "upscaler": "none", "ray_reconstruction": false, "width": 320, "height": 180})
 	root.add_child(app)
 	app.renderer.response_received.connect(response)
 	app.renderer.frame_presented.connect(presented)
