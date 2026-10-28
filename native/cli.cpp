@@ -1,4 +1,5 @@
 #include "document.h"
+#include "scene_buffers.h"
 #include <iostream>
 
 int main(int argc, char** argv) {
@@ -17,7 +18,7 @@ int main(int argc, char** argv) {
     std::string line;
     bool failed = false;
     while (std::getline(std::cin, line)) {
-      try { std::cout << editor::Json{{"ok", true}, {"result", document.dispatch(editor::Json::parse(line))}}.dump() << std::endl; }
+      try { std::cout << editor::Json{{"ok", true}, {"result", editor::text_buffers(document.dispatch(editor::Json::parse(line)))}}.dump() << std::endl; }
       catch (const std::exception& error) { failed = true; std::cout << editor::Json{{"ok", false}, {"error", error.what()}}.dump() << std::endl; }
     }
     return failed ? 1 : 0;

@@ -15,6 +15,8 @@ public:
 private:
   std::set<std::string> capture_layers_;
   struct Opinion { uint32_t mask = 0, values = 0; };
+  struct PrimOpinion { uint32_t captured_mask = 0, captured_values = 0, override_mask = 0, override_values = 0; std::optional<uint64_t> geometry; };
+  std::unordered_map<pxr::SdfPath, PrimOpinion, pxr::SdfPath::Hash> prims_;
   std::unordered_map<uint64_t, Opinion> textures_, geometries_;
   std::map<std::string, std::optional<uint64_t>> material_hashes_;
   Json sources_ = Json::array();

@@ -1,4 +1,5 @@
 #include "document.h"
+#include "scene_view.h"
 #include "usd/loader.h"
 #include <iostream>
 
@@ -8,6 +9,9 @@ int main(int argc,char **argv) {
       auto stage=pxr::UsdStage::Open(argv[i]);
       if(!stage)throw std::runtime_error("Cannot open fixture");
       auto toolkit=editor::compose_scene(stage,1);
+      // The loader reports expanded per-instance geometry.
+      for(auto &mesh:toolkit["meshes"])mesh=editor::expanded_mesh(toolkit,mesh);
+      toolkit.erase("prototypes");
       auto direct=remix::usd::load({argv[i]}).scene;
       for(const char *group:{"meshes","lights","cameras","materials"}) {
         auto &actual=direct[group];

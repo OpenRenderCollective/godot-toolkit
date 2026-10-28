@@ -6,6 +6,7 @@
 #include "openremix/remix_reconstruction_ext.h"
 #include "alpha_state.h"
 #include "render_categories.h"
+#include "scene_buffers.h"
 #include <algorithm>
 #include <cmath>
 #include <filesystem>
@@ -26,6 +27,27 @@
 
 using Json = nlohmann::json;
 static_assert(sizeof(EditorSharedFrame) == sizeof(remixapi_EditorSharedFrame));
+#if defined(_WIN32) && defined(REMIX_PLUS_API)
+#ifndef REMIXAPI_EXTERNAL_FRAME_VERSION
+// Remix Plus external frame export, for headers that do not declare it yet.
+#define REMIXAPI_EXTERNAL_FRAME_VERSION 1u
+#define REMIXAPI_STRUCT_TYPE_EXTERNAL_FRAME_EXT ((remixapi_StructType)0x4E560003)
+#define REMIXAPI_ERROR_CODE_FEATURE_UNAVAILABLE ((remixapi_ErrorCode)0x4E560001)
+typedef struct remixapi_ExternalFrameEXT {
+  remixapi_StructType sType; void* pNext;
+  uint32_t version;
+  uint32_t width, height;
+  uint32_t format;
+  uint32_t memoryTypeIndex;
+  uint64_t allocationSize;
+  uint8_t deviceUUID[16];
+  void* memoryHandle;
+  void* readySemaphore;
+  void* releasedSemaphore;
+} remixapi_ExternalFrameEXT;
+#endif
+using ConfigureExternalFrame = remixapi_ErrorCode(REMIXAPI_CALL*)(remixapi_ExternalFrameEXT*);
+#endif
 namespace {
 void checked(remixapi_ErrorCode code, const char* operation) {
   if (code != REMIXAPI_ERROR_CODE_SUCCESS) throw std::runtime_error(std::string(operation) + " failed (Remix code " + std::to_string(code) + ")");
@@ -34,6 +56,17 @@ uint64_t hash64(const std::string& value) {
   uint64_t h = 14695981039346656037ull;
   for (unsigned char c : value) { h ^= c; h *= 1099511628211ull; }
   return h ? h : 1;
+}
+template<typename Bytes> uint64_t hash_bytes(uint64_t h, const Bytes& bytes) {
+  for (unsigned char c : bytes) { h ^= c; h *= 1099511628211ull; }
+  return h;
+}
+// Describes every binary value of a message, so transports can be verified without a GPU.
+void describe_buffers(const Json& value, Json& result) {
+  if (value.is_binary()) {
+    const auto& bytes = value.get_binary();
+    result.push_back({{"type", editor::buffer_type_name(bytes.has_subtype() ? bytes.subtype() : 0)}, {"size", bytes.size()}, {"hash", hash_bytes(14695981039346656037ull, bytes)}});
+  } else if (value.is_structured()) for (const auto& item : value) describe_buffers(item, result);
 }
 remixapi_Float3D vector3(const Json& v) { return {v.at(0).get<float>(), v.at(1).get<float>(), v.at(2).get<float>()}; }
 remixapi_InstanceInfoBlendEXT blend_state(const Json& values) {
@@ -72,6 +105,11 @@ remixapi_Transform transformed(const remixapi_Transform& delta, const remixapi_T
 #ifdef _WIN32
 using NativePath = std::wstring;
 NativePath native_path(const std::string& value) { return std::filesystem::u8path(value).wstring(); }
+LRESULT CALLBACK preview_window_procedure(HWND window, UINT message, WPARAM wparam, LPARAM lparam) {
+  // The swapchain follows the client area, so it may exceed the desktop size.
+  if (message == WM_GETMINMAXINFO) { reinterpret_cast<MINMAXINFO*>(lparam)->ptMaxTrackSize = {16384, 16384}; return 0; }
+  return DefWindowProcW(window, message, wparam, lparam);
+}
 #else
 using NativePath = std::string;
 NativePath native_path(const std::string& value) { return value; }
@@ -82,8 +120,13 @@ public:
   ~Renderer() {
     if (running_) { clear(); api_.Shutdown(); }
 #ifdef _WIN32
-    if (window_) DestroyWindow(window_);
-    if (library_) FreeLibrary(reinterpret_cast<HMODULE>(library_));
+    // The runtime keeps the window procedure it installed after Shutdown, so
+    // destroying the window or unloading the runtime calls into freed state.
+    // Process exit releases both.
+    if (!running_) {
+      if (window_) DestroyWindow(window_);
+      if (library_) FreeLibrary(reinterpret_cast<HMODULE>(library_));
+    }
 #else
     if (library_) dlclose(library_);
 #endif
@@ -107,12 +150,16 @@ public:
     }
     if (width_ < 16 || height_ < 16 || width_ > 8192 || height_ > 8192) throw std::runtime_error("Invalid viewport size");
 #ifdef _WIN32
+    // An exported frame replaces the preview window, which stays hidden but keeps its swapchain.
+    const bool export_frame = message.contains("frame_process");
     const wchar_t* class_name = L"GodotRemixRenderer";
-    WNDCLASSW window_class{}; window_class.lpfnWndProc = DefWindowProcW;
+    WNDCLASSW window_class{}; window_class.lpfnWndProc = preview_window_procedure;
     window_class.hInstance = GetModuleHandleW(nullptr); window_class.lpszClassName = class_name;
     RegisterClassW(&window_class);
-    window_ = CreateWindowExW(0, class_name, L"Remix render preview", WS_OVERLAPPEDWINDOW | WS_VISIBLE,
-      CW_USEDEFAULT, CW_USEDEFAULT, int(width_), int(height_), nullptr, nullptr, window_class.hInstance, nullptr);
+    RECT bounds{0, 0, LONG(width_), LONG(height_)};
+    AdjustWindowRect(&bounds, WS_OVERLAPPEDWINDOW, FALSE);
+    window_ = CreateWindowExW(0, class_name, L"Remix render preview", WS_OVERLAPPEDWINDOW | (export_frame ? 0 : WS_VISIBLE),
+      CW_USEDEFAULT, CW_USEDEFAULT, bounds.right - bounds.left, bounds.bottom - bounds.top, nullptr, nullptr, window_class.hInstance, nullptr);
     if (!window_) throw std::runtime_error("Could not create renderer window");
     info.hwnd = reinterpret_cast<remixapi_HWND>(window_);
 #else
@@ -130,11 +177,22 @@ public:
     info.combineGuiInFinalColor = false;
     checked(api_.Startup(&info), "Startup");
     running_ = true;
+#ifdef REMIX_PLUS_API
+    // The Remix Plus API has no feature query; its runtime resolves unsupported upscalers itself.
+    dlss_ = ray_reconstruction_ = !openremix_;
+    if (!openremix_) {
+      retained_api_.create = reinterpret_cast<PFN_remixapi_CreateRetainedInstances>(symbol("remixapi_CreateRetainedInstances"));
+      retained_api_.update = reinterpret_cast<PFN_remixapi_UpdateRetainedInstances>(symbol("remixapi_UpdateRetainedInstances"));
+      retained_api_.destroy = reinterpret_cast<PFN_remixapi_DestroyRetainedInstances>(symbol("remixapi_DestroyRetainedInstances"));
+      retained_api_.draw = reinterpret_cast<PFN_remixapi_DrawRetainedInstances>(symbol("remixapi_DrawRetainedInstances"));
+    }
+#else
     remixapi_FeatureAvailability features{};
     if (!openremix_ && api_.GetFeatureAvailability && api_.GetFeatureAvailability(&features) == REMIXAPI_ERROR_CODE_SUCCESS) {
       dlss_ = (features.availableFeatures & REMIXAPI_FEATURE_DLSS_SUPER_RESOLUTION_BIT) != 0;
       ray_reconstruction_ = dlss_ && (features.availableFeatures & REMIXAPI_FEATURE_DLSS_RAY_RECONSTRUCTION_BIT) != 0;
     }
+#endif
 #ifndef _WIN32
     if (openremix_) {
       auto backend = reinterpret_cast<PFN_remixapi_GetBackendCapabilitiesEXT>(dlsym(library_, "remixapi_GetBackendCapabilitiesEXT"));
@@ -182,6 +240,12 @@ public:
       if (sendmsg(connection, &message, MSG_NOSIGNAL) != sizeof(frame)) throw std::runtime_error("Could not send GPU frame handles");
       shared_ = true;
     }
+#else
+    Json exported, export_error;
+    if (export_frame) {
+      try { exported = export_frame_to(message.at("frame_process").get<uint32_t>()); shared_ = true; }
+      catch (const std::exception& error) { export_error = error.what(); ShowWindow(window_, SW_SHOWNORMAL); }
+    }
 #endif
     if (!openremix_) {
     checked(api_.SetConfigVariable("rtx.fallbackLightMode", "0"), "Disable fallback lighting");
@@ -197,10 +261,69 @@ public:
     camera_ = {{"position", {0, 2, 5}}, {"forward", {0, 0, -1}}, {"up", {0, 1, 0}}, {"right", {1, 0, 0}}, {"fov", 60.0}};
     Json result{{"status", "ready"}, {"presentation", shared_ ? "shared_vulkan" : "native_window"}, {"width", width_}, {"height", height_},
       {"capabilities", {{"dlss", dlss_}, {"ray_reconstruction", ray_reconstruction_}, { "nis", nis_}, {"fsr31", fsr_}, {"pathtrace", pathtrace_}, {"nrd", nrd_}, {"taa", taa_}, {"renderer", renderer}}}};
+#ifdef _WIN32
+    if (shared_) result["frame"] = exported;
+    if (!export_error.is_null()) result["frame_error"] = export_error;
+#endif
     if (message.contains("render_settings")) result["render_settings"] = render_settings(message.at("render_settings"));
     return result;
   }
+#ifdef _WIN32
+  // Exports the runtime's output image and semaphores into the editor process.
+  // The editor owns the duplicated NT handles; the worker closes its own.
+  Json export_frame_to(DWORD process_id) {
+#ifdef REMIX_PLUS_API
+    auto configure = reinterpret_cast<ConfigureExternalFrame>(GetProcAddress(library_, "remixapi_ConfigureExternalFrame"));
+    if (!configure) throw std::runtime_error("The runtime does not export editor frames");
+    remixapi_ExternalFrameEXT frame{};
+    frame.sType = REMIXAPI_STRUCT_TYPE_EXTERNAL_FRAME_EXT; frame.version = REMIXAPI_EXTERNAL_FRAME_VERSION;
+    auto code = configure(&frame);
+    HANDLE handles[]{frame.memoryHandle, frame.readySemaphore, frame.releasedSemaphore};
+    struct Owned { HANDLE* h; ~Owned() { for (int i = 0; i < 3; ++i) if (h[i]) CloseHandle(h[i]); } } owned{handles};
+    if (code == REMIXAPI_ERROR_CODE_FEATURE_UNAVAILABLE)
+      throw std::runtime_error("The runtime cannot export editor frames on this GPU or with this output format");
+    if (code != REMIXAPI_ERROR_CODE_SUCCESS) throw std::runtime_error("The runtime could not export editor frames (Remix code " + std::to_string(code) + ")");
+    try {
+      if (!handles[0] || !handles[1] || !handles[2]) throw std::runtime_error("The runtime returned no frame handles");
+      constexpr uint32_t rgba8_unorm = 37;
+      if (frame.format != rgba8_unorm) throw std::runtime_error("The runtime exported an unsupported frame format");
+      if (frame.width != width_ || frame.height != height_)
+        throw std::runtime_error("The runtime exported a " + std::to_string(frame.width) + "x" + std::to_string(frame.height) + " frame instead of " +
+          std::to_string(width_) + "x" + std::to_string(height_));
+      HANDLE process = OpenProcess(PROCESS_DUP_HANDLE, FALSE, process_id);
+      if (!process) throw std::runtime_error("Could not open the editor process (error " + std::to_string(GetLastError()) + ")");
+      struct Process { HANDLE h; ~Process() { CloseHandle(h); } } process_owner{process};
+      HANDLE shared[3]{};
+      for (int i = 0; i < 3; ++i) if (!DuplicateHandle(GetCurrentProcess(), handles[i], process, &shared[i], 0, FALSE, DUPLICATE_SAME_ACCESS)) {
+        auto error = GetLastError();
+        for (int j = 0; j < i; ++j) DuplicateHandle(process, shared[j], nullptr, nullptr, 0, FALSE, DUPLICATE_CLOSE_SOURCE);
+        throw std::runtime_error("Could not share frame handles with the editor (error " + std::to_string(error) + ")");
+      }
+      static const char digits[] = "0123456789abcdef";
+      std::string uuid;
+      for (auto byte : frame.deviceUUID) { uuid += digits[byte >> 4]; uuid += digits[byte & 15]; }
+      return {{"width", frame.width}, {"height", frame.height}, {"memory_type", frame.memoryTypeIndex}, {"allocation_size", frame.allocationSize},
+        {"device_uuid", uuid}, {"memory", uint64_t(uintptr_t(shared[0]))}, {"ready", uint64_t(uintptr_t(shared[1]))}, {"released", uint64_t(uintptr_t(shared[2]))}};
+    } catch (...) { configure(nullptr); throw; }
+#else
+    (void)process_id;
+    throw std::runtime_error("This renderer build cannot export frames to the editor");
+#endif
+  }
+#endif
+  void* symbol(const char* name) {
+#ifdef _WIN32
+    return reinterpret_cast<void*>(GetProcAddress(library_, name));
+#else
+    return dlsym(library_, name);
+#endif
+  }
   void clear() {
+#ifdef REMIX_PLUS_API
+    // Retained instances must go before the meshes they draw.
+    if (!retained_.empty()) retained_api_.destroy(retained_.data(), uint32_t(retained_.size()));
+    retained_.clear();
+#endif
     for (auto mesh : meshes_) api_.DestroyMesh(mesh);
     for (auto light : lights_) api_.DestroyLight(light);
     for (const auto& material : materials_) api_.DestroyMaterial(material.second);
@@ -213,16 +336,39 @@ public:
     if (!std::isfinite(meters_per_unit) || meters_per_unit <= 0) throw std::runtime_error("Invalid USD scene units");
     auto scale = std::to_string(0.01 / meters_per_unit);
     if (!openremix_) checked(api_.SetConfigVariable("rtx.sceneScale", scale.c_str()), "Set USD scene scale");
+    // Light handles are the light hashes, and Remix applies DestroyLight only at
+    // the next Present. Destroying a light that this scene creates again would
+    // remove the new light, so only lights missing from the new scene go.
+    auto previous_lights = std::move(lights_);
+    lights_.clear(); light_origins_.clear();
+    auto destroy_replaced = [&] {
+      for (auto light : previous_lights)
+        if (std::find(lights_.begin(), lights_.end(), light) == lights_.end()) api_.DestroyLight(light);
+    };
     clear();
     try {
       Json fallback{{"id", "default"}, {"albedo", {0.7, 0.7, 0.7}}};
       material(fallback);
       for (auto& m : scene.at("materials")) material(m);
-      for (auto& m : scene.at("meshes")) mesh(m);
+      for (auto& m : scene.at("meshes")) mesh(m, scene.at("prototypes"));
       for (auto& light : scene.at("lights")) add_light(light);
+      destroy_replaced();
       revision_ = scene.at("revision").get<uint64_t>();
       geometry_revision_ = scene.value("geometry_revision", revision_);
-    } catch (...) { clear(); throw; }
+      retain_instances();
+    } catch (...) { destroy_replaced(); clear(); throw; }
+  }
+  // Registers the scene's draws once, so frames replay them with one call.
+  void retain_instances() {
+#ifdef REMIX_PLUS_API
+    if (!retained_api_ || instances_.empty()) return;
+    std::vector<remixapi_InstanceInfo> infos(instances_);
+    for (size_t i = 0; i < infos.size(); ++i) infos[i].pNext = &blend_states_[i];
+    std::vector<uint64_t> handles(infos.size());
+    auto code = retained_api_.create(infos.data(), uint32_t(infos.size()), handles.data());
+    if (code == REMIXAPI_ERROR_CODE_SUCCESS) retained_ = std::move(handles);
+    else std::cerr << "Retained instances unavailable (Remix code " << code << "); drawing per frame\n";
+#endif
   }
   void camera(const Json& data) { camera_ = data; }
   Json update_lights(const Json& request) {
@@ -270,14 +416,23 @@ public:
       if (!std::isfinite(value)) throw std::runtime_error("Non-finite preview transform");
     auto matches = [&](const std::string& id) { return id == path || id.rfind(path + "/", 0) == 0; };
     size_t updated = 0;
+#ifdef REMIX_PLUS_API
+    std::vector<remixapi_RetainedInstanceUpdate> retained;
+#endif
     for (size_t i = 0; i < instances_.size(); ++i) if (matches(instance_origins_[i].first)) {
       instances_[i].transform = transformed(delta, instance_origins_[i].second);
       bool moving = false;
       for (unsigned row = 0; row < 3; ++row) for (unsigned col = 0; col < 4; ++col)
         moving |= instances_[i].transform.matrix[row][col] != instance_origins_[i].second.matrix[row][col];
       if (moving) moving_instances_.insert(i); else moving_instances_.erase(i);
+#ifdef REMIX_PLUS_API
+      if (!retained_.empty()) retained.push_back({retained_[i], instances_[i].transform, REMIXAPI_RETAINED_UPDATE_TRANSFORM, true});
+#endif
       ++updated;
     }
+#ifdef REMIX_PLUS_API
+    if (!retained.empty()) checked(retained_api_.update(retained.data(), uint32_t(retained.size())), "UpdateRetainedInstances");
+#endif
     for (size_t i = 0; i < lights_.size(); ++i) if (matches(light_origins_[i].at("id").get<std::string>())) {
       // Remix keys lights by hash: creating the same ID updates its definition.
       // Always transform the baseline, so preview deltas never accumulate.
@@ -331,7 +486,13 @@ public:
     remixapi_CameraInfo camera{};
     camera.sType = REMIXAPI_STRUCT_TYPE_CAMERA_INFO; camera.pNext = &parameters; camera.type = REMIXAPI_CAMERA_TYPE_WORLD;
     checked(api_.SetupCamera(&camera), "SetupCamera");
-    for (size_t i = 0; i < instances_.size(); ++i) {
+#ifdef REMIX_PLUS_API
+    const bool replay = !retained_.empty();
+    if (replay) checked(retained_api_.draw(nullptr), "DrawRetainedInstances");
+#else
+    const bool replay = false;
+#endif
+    for (size_t i = 0; !replay && i < instances_.size(); ++i) {
       // Attach only for the call: vector growth and transform previews must not
       // leave stored pNext pointers referring to moved or expired extensions.
       auto instance = instances_[i]; instance.pNext = &blend_states_[i];
@@ -442,71 +603,69 @@ private:
     checked(api_.CreateMaterial(&info, &handle), "CreateMaterial");
     materials_.emplace(data.at("id").get<std::string>(), handle);
   }
-  void mesh(const Json& data) {
-    const auto groups = editor::category_surface_groups(data);
-    if (groups.size() == 1) {
-      mesh_group(data, groups.begin()->first);
-      return;
-    }
-    for (const auto& [flags, indices] : groups) {
-      // Keep the USD id on every group so selection transform previews still
-      // move all material subsets together.
-      Json group = Json::object();
-      for (auto item = data.begin(); item != data.end(); ++item)
-        if (item.key() != "surfaces") group[item.key()] = item.value();
-      group["surfaces"] = Json::array();
-      for (auto index : indices) group["surfaces"].push_back(data.at("surfaces").at(index));
-      mesh_group(group, flags);
+  // Each category group of an instance draws its own Remix mesh. Instances
+  // share one mesh per prototype and surface selection.
+  void mesh(const Json& data, const Json& prototypes) {
+    const auto index = data.at("prototype").get<size_t>();
+    const auto& prototype = prototypes.at(index);
+    if (data.at("surfaces").size() != prototype.at("surfaces").size()) throw std::runtime_error("Mesh surfaces do not match their prototype");
+    for (const auto& [flags, selection] : editor::category_surface_groups(data)) {
+      // Keep hidden/ignored geometry in the editor snapshot, but do not submit
+      // it. The native runtime can allocate a zero-sized material buffer when
+      // its first frame contains only hidden surfaces.
+      if (flags & (REMIXAPI_INSTANCE_CATEGORY_BIT_HIDDEN | REMIXAPI_INSTANCE_CATEGORY_BIT_IGNORE)) continue;
+      auto cached = mesh_cache_.find({index, selection});
+      if (cached == mesh_cache_.end()) cached = mesh_cache_.emplace(std::make_pair(index, selection), create_mesh(prototype, selection)).first;
+      // The USD id stays on every group, so transform previews move all subsets together.
+      if (cached->second) add_instance(data, cached->second, flags);
     }
   }
-  void mesh_group(const Json& data, uint32_t flags) {
-    // Keep hidden/ignored geometry in the editor snapshot, but do not submit
-    // it. The native runtime can allocate a zero-sized material buffer when
-    // its first frame contains only hidden surfaces.
-    if (flags & (REMIXAPI_INSTANCE_CATEGORY_BIT_HIDDEN | REMIXAPI_INSTANCE_CATEGORY_BIT_IGNORE)) return;
-    const auto geometry_hash = hash64(data.at("surfaces").dump());
-    if (auto cached = mesh_cache_.find(geometry_hash); cached != mesh_cache_.end()) {
-      add_instance(data, cached->second, flags);
-      return;
-    }
+  remixapi_MeshHandle create_mesh(const Json& prototype, const std::vector<size_t>& selection) {
     std::vector<std::vector<remixapi_HardcodedVertex>> vertices;
     std::vector<std::vector<uint32_t>> indices;
     std::vector<remixapi_MeshInfoSurfaceTriangles> surfaces;
-    for (const auto& surface : data.at("surfaces")) {
-      vertices.emplace_back(); indices.push_back(surface.at("indices").get<std::vector<uint32_t>>());
-      const auto colors = surface.value("colors", Json::array());
-      if (!colors.empty() && colors.size() != surface.at("vertices").size()) throw std::runtime_error("Invalid mesh vertex colors");
-      for (const auto& v : surface.at("vertices")) {
-        if (v.size() != 8) throw std::runtime_error("Invalid mesh vertex");
-        remixapi_HardcodedVertex vertex{};
-        for (int i = 0; i < 3; ++i) { vertex.position[i] = v[i].get<float>(); vertex.normal[i] = v[i + 3].get<float>(); }
-        // Some captures contain NaN/Inf UVs, serialized as JSON null. Keep the
-        // mesh renderable with a zero fallback for just the invalid component.
-        for (int i = 0; i < 2; ++i) {
-          const auto uv = v[i + 6].is_null() ? 0.f : v[i + 6].get<float>();
-          vertex.texcoord[i] = std::isfinite(uv) ? uv : 0.f;
-        }
+    uint64_t geometry_hash = 14695981039346656037ull;
+    for (auto index : selection) {
+      const auto& surface = prototype.at("surfaces").at(index);
+      const auto positions = editor::read_buffer<float>(surface.at("positions"));
+      const auto normals = editor::read_buffer<float>(surface.at("normals"));
+      const auto uvs = editor::read_buffer<float>(surface.at("uvs"));
+      const auto colors = surface.contains("colors") ? editor::read_buffer<uint32_t>(surface.at("colors")) : std::vector<uint32_t>();
+      const size_t count = positions.size() / 3;
+      if (positions.size() % 3 || normals.size() != positions.size() || uvs.size() != count * 2 || (!colors.empty() && colors.size() != count))
+        throw std::runtime_error("Invalid mesh vertex data");
+      indices.push_back(editor::read_buffer<uint32_t>(surface.at("indices")));
+      if (indices.back().size() % 3) throw std::runtime_error("Mesh indices must form triangles");
+      const auto& material = surface.at("material").get_ref<const std::string&>();
+      for (const auto* name : {"positions", "normals", "uvs", "colors", "indices"})
+        if (surface.contains(name)) geometry_hash = hash_bytes(geometry_hash, surface.at(name).get_binary());
+      geometry_hash = hash_bytes(geometry_hash, material);
+      vertices.emplace_back(count);
+      for (size_t v = 0; v < count; ++v) {
+        auto& vertex = vertices.back()[v];
+        for (int i = 0; i < 3; ++i) { vertex.position[i] = positions[v * 3 + i]; vertex.normal[i] = normals[v * 3 + i]; }
+        // Some captures contain NaN/Inf UVs. Keep the mesh renderable with a
+        // zero fallback for just the invalid component.
+        for (int i = 0; i < 2; ++i) vertex.texcoord[i] = std::isfinite(uvs[v * 2 + i]) ? uvs[v * 2 + i] : 0.f;
         // Match Remix's USD importer: captures store V flipped from runtime texture coordinates.
         vertex.texcoord[1] = 1.f - vertex.texcoord[1];
-        vertex.color = colors.empty() ? 0xffffffffu : colors.at(vertices.back().size()).get<uint32_t>();
-        vertices.back().push_back(vertex);
+        vertex.color = colors.empty() ? 0xffffffffu : colors[v];
       }
-      for (auto index : indices.back()) if (index >= vertices.back().size()) throw std::runtime_error("Mesh index is out of bounds");
+      for (auto i : indices.back()) if (i >= count) throw std::runtime_error("Mesh index is out of bounds");
       // USD uses counter-clockwise fronts; the Remix external mesh API uses clockwise fronts.
       for (size_t i = 0; i + 2 < indices.back().size(); i += 3) std::swap(indices.back()[i + 1], indices.back()[i + 2]);
       remixapi_MeshInfoSurfaceTriangles info{};
       info.vertices_values = vertices.back().data(); info.vertices_count = vertices.back().size();
       info.indices_values = indices.back().data(); info.indices_count = indices.back().size();
-      info.material = materials_.at(surface.at("material").get<std::string>());
+      info.material = materials_.at(material);
       surfaces.push_back(info);
     }
-    if (surfaces.empty()) return;
+    if (surfaces.empty()) return {};
     remixapi_MeshInfo info{}; info.sType = REMIXAPI_STRUCT_TYPE_MESH_INFO;
-    info.hash = geometry_hash; info.surfaces_values = surfaces.data(); info.surfaces_count = uint32_t(surfaces.size());
+    info.hash = geometry_hash ? geometry_hash : 1; info.surfaces_values = surfaces.data(); info.surfaces_count = uint32_t(surfaces.size());
     remixapi_MeshHandle handle{};
     checked(api_.CreateMesh(&info, &handle), "CreateMesh"); meshes_.push_back(handle);
-    mesh_cache_[geometry_hash] = handle;
-    add_instance(data, handle, flags);
+    return handle;
   }
   void add_instance(const Json& data, remixapi_MeshHandle handle, uint32_t flags) {
     remixapi_InstanceInfo instance{}; instance.sType = REMIXAPI_STRUCT_TYPE_INSTANCE_INFO;
@@ -562,6 +721,16 @@ private:
   PFN_remixapi_GetShadowStatisticsEXT query_shadows_ = nullptr;
   PFN_remixapi_GetLocalLightStatisticsEXT query_local_lights_ = nullptr;
   remixapi_ErrorCode (*query_reconstruction_)(remixapi_ReconstructionDiagnosticsEXT*) = nullptr;
+#ifdef REMIX_PLUS_API
+  struct RetainedApi {
+    PFN_remixapi_CreateRetainedInstances create = nullptr;
+    PFN_remixapi_UpdateRetainedInstances update = nullptr;
+    PFN_remixapi_DestroyRetainedInstances destroy = nullptr;
+    PFN_remixapi_DrawRetainedInstances draw = nullptr;
+    explicit operator bool() const { return create && update && destroy && draw; }
+  } retained_api_;
+  std::vector<uint64_t> retained_;
+#endif
   Json effective_settings_;
   studio::RenderSettings requested_settings_;
   bool openremix_ = false, pathtrace_ = false, fsr_ = false, nrd_ = false, taa_ = false;
@@ -581,7 +750,7 @@ private:
   Json render_variables_ = Json::object();
   std::map<std::string, remixapi_MaterialHandle> materials_;
   std::vector<remixapi_MeshHandle> meshes_;
-  std::map<uint64_t, remixapi_MeshHandle> mesh_cache_;
+  std::map<std::pair<size_t, std::vector<size_t>>, remixapi_MeshHandle> mesh_cache_;
   std::vector<remixapi_InstanceInfo> instances_;
   std::vector<remixapi_InstanceInfoBlendEXT> blend_states_;
   std::vector<std::pair<std::string, remixapi_Transform>> instance_origins_;
@@ -597,7 +766,11 @@ private:
 
 int main() {
 #ifdef _WIN32
+#ifdef REMIX_PLUS_API
+  constexpr bool shared_frames = true;
+#else
   constexpr bool shared_frames = false;
+#endif
   editor::Channel channel(reinterpret_cast<intptr_t>(GetStdHandle(STD_INPUT_HANDLE)), reinterpret_cast<intptr_t>(GetStdHandle(STD_OUTPUT_HANDLE)));
 #else
   constexpr bool shared_frames = true;
@@ -621,6 +794,7 @@ int main() {
         else if (op == "settings") renderer.settings(request.at("settings"));
         else if (op == "render_settings") response["result"] = renderer.render_settings(request.at("settings"));
         else if (op == "frame") response["result"] = renderer.frame();
+        else if (op == "inspect_buffers") { response["result"] = Json::array(); describe_buffers(request.value("data", Json()), response["result"]); }
         else if (op == "shutdown") shutdown = true;
         else throw std::runtime_error("Unknown renderer operation: " + op);
       } catch (const std::exception& error) { response["ok"] = false; response["error"] = error.what(); }

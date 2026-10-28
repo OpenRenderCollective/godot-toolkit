@@ -12,11 +12,11 @@ func _initialize() -> void:
 
 func run() -> void:
 	var view := LayoutView.new(); root.add_child(view); view.size = Vector2(800, 600)
-	var surface := {"vertices": [[-10,-10,0], [10,-10,0], [10,10,0], [-10,10,0]], "indices": [0,1,2,0,2,3]}
+	var surface := {"positions": PackedVector3Array([Vector3(-10,-10,0), Vector3(10,-10,0), Vector3(10,10,0), Vector3(-10,10,0)]), "indices": PackedInt32Array([0,1,2,0,2,3])}
 	for up in [Vector3.UP, Vector3.BACK]:
 		var rotation := Basis(Vector3.RIGHT, -PI / 2) if up == Vector3.UP else Basis.IDENTITY
 		view.set_scene({"up_axis": "Y" if up == Vector3.UP else "Z", "meters_per_unit": 1,
-			"meshes": [{"id": "/Ground", "transform": Gizmo.to_array(Transform3D(rotation, up * 2)), "surfaces": [surface]}]})
+			"prototypes": [{"surfaces": [surface]}], "meshes": [{"id": "/Ground", "transform": Gizmo.to_array(Transform3D(rotation, up * 2)), "prototype": 0}]})
 		view.pitch = 0.9; view.yaw = 0.2; view.center = -up * 10; view.distance = 40
 		view.rendered_texture = ImageTexture.create_from_image(Image.create(960, 540, false, Image.FORMAT_RGBA8))
 		view.show_render = true
@@ -35,7 +35,7 @@ func run() -> void:
 		check(spawn.basis.z.is_equal_approx(up), "New directional emitters must point toward the hit surface")
 		var prop := Transform3D(Basis.from_scale(Vector3(1, 2, 3)), up * 30)
 		var data: Dictionary = view.scene.duplicate(true)
-		data.meshes.append({"id": "/Prop", "transform": Gizmo.to_array(prop), "surfaces": [surface]})
+		data.meshes.append({"id": "/Prop", "transform": Gizmo.to_array(prop), "prototype": 0})
 		view.set_scene(data)
 		var mesh_placement := view.placement_transform(prop, hit, {"path": "/Prop", "authoring": {"kind": "mesh"}})
 		var bottom := 20.0 if up == Vector3.UP else 0.0

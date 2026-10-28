@@ -91,9 +91,9 @@ func run() -> void:
 		view.notification(Node.NOTIFICATION_WM_WINDOW_FOCUS_OUT)
 		check(not view.gizmo.active and view.gizmo.world.is_equal_approx(pose), "Losing focus must cancel keyboard transforms")
 		# Depth-aware aiming at an elevated mesh, with the floor behind it.
-		var surface := {"vertices": [[-10,-10,0], [10,-10,0], [10,10,0], [-10,10,0]], "indices": [0,1,2,0,2,3]}
+		var surface := {"positions": PackedVector3Array([Vector3(-10,-10,0), Vector3(10,-10,0), Vector3(10,10,0), Vector3(-10,10,0)]), "indices": PackedInt32Array([0,1,2,0,2,3])}
 		var floor_rotation := Basis(Vector3.RIGHT, -PI / 2) if up == Vector3.UP else Basis.IDENTITY
-		view.set_scene({"up_axis": "Y" if up == Vector3.UP else "Z", "meshes": [{"id": "/Ground", "transform": Gizmo.to_array(Transform3D(floor_rotation, up * 2)), "surfaces": [surface]}]})
+		view.set_scene({"up_axis": "Y" if up == Vector3.UP else "Z", "prototypes": [{"surfaces": [surface]}], "meshes": [{"id": "/Ground", "transform": Gizmo.to_array(Transform3D(floor_rotation, up * 2)), "prototype": 0}]})
 		view.pitch = 0.9; view.center = up * 2; view.distance = 12
 		pose.origin = up * 5; target(pose)
 		var destination: Vector3 = up * 2 + Vector3.RIGHT

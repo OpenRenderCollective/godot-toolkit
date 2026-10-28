@@ -19,32 +19,70 @@ func check(ok: bool, message: String) -> void:
 
 func _initialize() -> void: run.call_deferred()
 
-func roundtrip(message: Dictionary, limit: int) -> void:
-	var path := directory.path_join("framed.bin")
-	var file := FileAccess.open(path, FileAccess.WRITE_READ)
-	check(Stream.new().write(file, message, limit), "Stream writer must succeed")
-	file.seek(0)
+func read_chain(file: FileAccess, limit: int) -> PackedByteArray:
 	var bytes := PackedByteArray()
 	while file.get_position() < file.get_length():
 		var flags := file.get_32()
 		var count := flags & ~Stream.MORE_FRAMES
 		check(count > 0 and count <= limit, "Frame length must be bounded and nonzero")
 		bytes.append_array(file.get_buffer(count))
-		check(bool(flags & Stream.MORE_FRAMES) == (file.get_position() < file.get_length()), "Only the final frame may end the message")
+		if not flags & Stream.MORE_FRAMES: break
+	return bytes
+
+# Packed arrays compare by type name and bytes; other values through JSON.
+func expected(value: Variant) -> Variant:
+	var type := Stream.new()._packed(value)
+	if not type.is_empty(): return {"type": type, "bytes": value if value is PackedByteArray else value.to_byte_array()}
+	if value is Dictionary:
+		var result := {}
+		for key in value: result[key] = expected(value[key])
+		return result
+	if value is Array: return value.map(expected)
+	return JSON.parse_string(JSON.stringify([value]))[0]
+
+func decoded(value: Variant, blob: PackedByteArray, offsets: Array, sizes: Array) -> Variant:
+	if value is Dictionary and value.has("$buffer"):
+		var i := int(value["$buffer"])
+		return {"type": value.type, "bytes": blob.slice(offsets[i], offsets[i] + int(sizes[i]))}
+	if value is Dictionary:
+		var result := {}
+		for key in value: result[key] = decoded(value[key], blob, offsets, sizes)
+		return result
+	if value is Array: return value.map(func(item): return decoded(item, blob, offsets, sizes))
+	return value
+
+func roundtrip(message: Dictionary, limit: int) -> void:
+	var path := directory.path_join("framed.bin")
+	var file := FileAccess.open(path, FileAccess.WRITE_READ)
+	check(Stream.new().write(file, message, limit), "Stream writer must succeed")
+	file.seek(0)
 	var json := JSON.new()
-	check(json.parse(bytes.get_string_from_utf8()) == OK, "Fragmented payload must be valid UTF-8 JSON")
-	check(json.data == JSON.parse_string(JSON.stringify(message)), "All scene values must survive fragmentation")
+	check(json.parse(read_chain(file, limit).get_string_from_utf8()) == OK, "Fragmented payload must be valid UTF-8 JSON")
+	var data: Dictionary = json.data if json.data is Dictionary else {}
+	var sizes: Array = data.get("buffers", [])
+	data.erase("buffers")
+	var offsets := []
+	var total := 0
+	for size in sizes: offsets.append(total); total += int(size)
+	var blob := read_chain(file, limit) if total > 0 else PackedByteArray()
+	check(blob.size() == total and file.get_position() == file.get_length(), "Binary buffers must form one chain of their declared total size")
+	check(decoded(data, blob, offsets, sizes) == expected(message), "All scene values must survive fragmentation")
 
 func run() -> void:
 	directory = ProjectSettings.globalize_path("res://../.work/large-scene/%d" % Time.get_ticks_usec()).simplify_path()
 	DirAccess.make_dir_recursive_absolute(directory)
-	var vertices: Array = []
-	for i in 9000: vertices.append([float(i), -2.25, 0.0, 0.0, 1.0, 0.0, null, 0.125])
-	var value := {"meshes": [{"id": "/mesh_材🌲", "surfaces": [{"vertices": vertices, "indices": [0,1,2], "colors": [4294967295,0,16777215]}]}], "empty": [], "object": {}, "bool": true, "null": null}
+	var positions := PackedVector3Array()
+	var uvs := PackedVector2Array()
+	for i in 9000: positions.append(Vector3(float(i), -2.25, 0.0)); uvs.append(Vector2(NAN if i == 1 else 0.0, 0.125))
+	var value := {"prototypes": [{"surfaces": [{"positions": positions, "uvs": uvs, "indices": PackedInt32Array([0,1,2]),
+		"colors": PackedInt32Array([-1,0,16777215]), "empty": PackedByteArray()}]}],
+		"meshes": [{"id": "/mesh_材🌲", "prototype": 0}], "empty": [], "object": {}, "bool": true, "null": null}
 	roundtrip({"empty": []}, 1)
 	roundtrip({"x": 1}, 7) # Exactly one full frame must still have a terminator.
 	roundtrip({"text": "a\"\\\n\\u0000材🌲", "values": [true, false, null, -2.5]}, 3)
 	roundtrip(value, 8192)
+	roundtrip(value, 7)
+	roundtrip({"tail": PackedByteArray([1, 2, 3]), "empty": PackedInt32Array()}, 3)
 	var canceled_file := FileAccess.open(directory.path_join("canceled.bin"), FileAccess.WRITE)
 	check(not Stream.new().write(canceled_file, value, 32, func(): return true), "Cancellation must stop a partial upload")
 	check(canceled_file.get_length() == 0, "A canceled upload must not emit an empty complete message")
@@ -53,9 +91,13 @@ func run() -> void:
 	var created: Dictionary = doc.execute_data(JSON.stringify({"op": "create", "capture": ProjectSettings.globalize_path("res://../tests/fixtures/capture.usda"), "path": project}))
 	check(created.get("ok", false) and created.result.document.path == project, "Direct bridge must preserve Unicode paths")
 	var response: Dictionary = doc.execute_data('{"op":"scene"}')
-	check(response.get("ok", false) and response.result.meshes.size() == 2, "Direct scene result must contain all meshes")
-	var old_response = JSON.parse_string(doc.execute('{"op":"scene"}'))
-	check(response.result == old_response.result, "Direct scene transfer must preserve the existing data contract")
+	check(response.get("ok", false) and response.result.meshes.size() == 2 and response.result.prototypes.size() == 1, "Direct scene result must contain all meshes and share their geometry")
+	var surface: Dictionary = response.result.prototypes[0].surfaces[0]
+	check(surface.positions is PackedVector3Array and surface.normals is PackedVector3Array and surface.uvs is PackedVector2Array and surface.indices is PackedInt32Array,
+		"Direct scene geometry must arrive as packed arrays")
+	var text_response = JSON.parse_string(doc.execute('{"op":"scene"}'))
+	check(text_response.result.prototypes[0].surfaces[0].positions.type == "vec3" and Marshalls.base64_to_raw(text_response.result.prototypes[0].surfaces[0].positions.base64) == surface.positions.to_byte_array(),
+		"The text bridge must carry the same buffers as base64")
 	check(not doc.execute_data('{"op":"invalid"}').get("ok", true), "Native exceptions must remain structured errors")
 
 	# Exercise the UI's reported failure path without losing the USD document or
@@ -86,9 +128,11 @@ func run() -> void:
 		check(response.get("ok", false), "Large scene must cross the native bridge")
 		if not response.get("ok", false): continue
 		var scene: Dictionary = response.result
-		print("Loaded ", scene.meshes.size(), " meshes in ", (Time.get_ticks_msec() - start) / 1000.0, "s")
+		print("Loaded ", scene.meshes.size(), " meshes, ", scene.prototypes.size(), " prototypes in ", (Time.get_ticks_msec() - start) / 1000.0, "s")
+		start = Time.get_ticks_msec()
 		var geometry := Geometry.new()
 		geometry.rebuild(scene)
+		print("Layout geometry in ", (Time.get_ticks_msec() - start) / 1000.0, "s")
 		check(geometry.entries.size() == scene.meshes.size(), "Large scene must build viewport geometry")
 		print("Built layout geometry: ", geometry.entries.size(), " instances")
 		var client := Client.new(); root.add_child(client); client.set_process(false)
@@ -96,6 +140,7 @@ func run() -> void:
 		var replies: Array = []
 		client.response_received.connect(func(reply: Dictionary): replies.append(reply))
 		client.writer = Thread.new(); client.writer.start(client._exchange_loop.bind(client.generation))
+		start = Time.get_ticks_msec()
 		client.send({"op": "large_scene_transport_probe", "scene": scene})
 		client.send({"op": "hello"})
 		var deadline := Time.get_ticks_msec() + 600000
@@ -104,6 +149,6 @@ func run() -> void:
 		if replies.size() == 2:
 			check(replies[0].get("error", "") == "Unknown renderer operation: large_scene_transport_probe" and replies[1].get("ok", false), "Worker must parse the complete large scene and remain aligned")
 		client.stop_worker(); client.queue_free()
-		print("Large scene upload complete")
+		print("Large scene upload complete in ", (Time.get_ticks_msec() - start) / 1000.0, "s")
 	print("Large scene bridge and streaming: %d failures" % failures)
 	quit(1 if failures else 0)

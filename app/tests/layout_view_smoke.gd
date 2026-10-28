@@ -32,10 +32,10 @@ func run() -> void:
 	root.add_child(view)
 	view.position = Vector2(20, 20)
 	view.size = Vector2(900, 600)
-	var surface := {"vertices": [[-0.8,-0.8,0], [0.8,-0.8,0], [0,0.8,0]], "indices": [0,1,2]}
-	view.set_scene({"meshes": [
-		{"id": "/left", "transform": [1,0,0,0,0,1,0,0,0,0,1,0,-1.1,0,0,1], "surfaces": [surface]},
-		{"id": "/right", "transform": [1,0,0,0,0,1,0,0,0,0,1,0,1.1,0,0,1], "surfaces": [surface]}], "lights": []})
+	var surface := {"positions": PackedVector3Array([Vector3(-0.8,-0.8,0), Vector3(0.8,-0.8,0), Vector3(0,0.8,0)]), "indices": PackedInt32Array([0,1,2])}
+	view.set_scene({"prototypes": [{"surfaces": [surface]}], "meshes": [
+		{"id": "/left", "transform": [1,0,0,0,0,1,0,0,0,0,1,0,-1.1,0,0,1], "prototype": 0},
+		{"id": "/right", "transform": [1,0,0,0,0,1,0,0,0,0,1,0,1.1,0,0,1], "prototype": 0}], "lights": []})
 	view.yaw = 0; view.pitch = 0; view.distance = 6
 	view.queue_redraw()
 	await settle()

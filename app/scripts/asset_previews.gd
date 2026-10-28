@@ -93,14 +93,13 @@ func _process(_delta: float) -> void:
 			failed.emit(active.id, response.get("error", "Could not load asset"))
 			active = {}
 		return
-	var text: String = provider.poll_asset_preview()
-	if text.is_empty():
+	var response: Dictionary = provider.poll_asset_preview()
+	if response.is_empty():
 		return
 	var job := active
 	active = {}
 	if job.generation != generation:
 		return
-	var response = JSON.parse_string(text)
 	if not response.get("ok", false):
 		failed.emit(job.id, response.get("error", "Could not load asset"))
 		return
@@ -232,30 +231,26 @@ func _apply_alpha(material: StandardMaterial3D, data: Dictionary, captured: Dict
 		if data.get("blend_type", 0) == 6: material.blend_mode = BaseMaterial3D.BLEND_MODE_ADD
 		elif data.get("blend_type", 0) == 7: material.blend_mode = BaseMaterial3D.BLEND_MODE_MUL
 
-func _mesh(data: Dictionary, materials: Dictionary) -> MeshInstance3D:
+func _mesh(data: Dictionary, prototype: Dictionary, materials: Dictionary) -> MeshInstance3D:
 	var instance := MeshInstance3D.new()
 	var mesh := ArrayMesh.new()
-	for surface in data.surfaces:
-		if surface.vertices.is_empty() or surface.indices.is_empty():
+	for surface in prototype.surfaces:
+		var points: PackedVector3Array = surface.positions
+		if points.is_empty() or surface.indices.is_empty():
 			continue
-		var points := PackedVector3Array()
-		var normals := PackedVector3Array()
-		var uv := PackedVector2Array()
-		for vertex in surface.vertices:
-			points.append(Vector3(vertex[0], vertex[1], vertex[2]))
-			normals.append(Vector3(vertex[3], vertex[4], vertex[5]))
-			uv.append(Vector2(vertex[6], 1.0 - vertex[7]))
-		var indices := PackedInt32Array(surface.indices)
-		for i in range(0, indices.size(), 3):
+		var uv: PackedVector2Array = surface.uvs.duplicate()
+		for i in range(uv.size()):
+			uv[i] = Vector2(uv[i].x, 1.0 - uv[i].y)
+		var indices: PackedInt32Array = surface.indices.duplicate()
+		for i in range(0, indices.size() - 2, 3):
 			var swap := indices[i + 1]; indices[i + 1] = indices[i + 2]; indices[i + 2] = swap
 		var arrays := []
 		arrays.resize(Mesh.ARRAY_MAX)
-		arrays[Mesh.ARRAY_VERTEX] = points; arrays[Mesh.ARRAY_NORMAL] = normals
+		arrays[Mesh.ARRAY_VERTEX] = points; arrays[Mesh.ARRAY_NORMAL] = surface.normals
 		arrays[Mesh.ARRAY_TEX_UV] = uv; arrays[Mesh.ARRAY_INDEX] = indices
 		if surface.has("colors"):
 			var colors := PackedColorArray()
-			for packed in surface.colors:
-				var bits := int(packed)
+			for bits in surface.colors:
 				colors.append(Color(float((bits >> 16) & 255) / 255.0, float((bits >> 8) & 255) / 255.0, float(bits & 255) / 255.0, float((bits >> 24) & 255) / 255.0))
 			arrays[Mesh.ARRAY_COLOR] = colors
 		mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
@@ -297,7 +292,7 @@ func _render(job: Dictionary, data: Dictionary) -> void:
 				rendering = false; return
 		var axis := Basis(Vector3.RIGHT, -PI / 2) if data.scene.get("up_axis", "Y") == "Z" else Basis.IDENTITY
 		for entry in data.scene.meshes:
-			var instance := _mesh(entry, materials)
+			var instance := _mesh(entry, data.scene.prototypes[int(entry.prototype)], materials)
 			instance.transform = Transform3D(axis, Vector3.ZERO) * instance.transform
 			content.add_child(instance)
 			var box := instance.transform * instance.get_aabb()
