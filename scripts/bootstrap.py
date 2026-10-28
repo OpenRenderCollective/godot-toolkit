@@ -111,7 +111,8 @@ def godot(jobs):
     patch(source, "godot-external-frame.patch")
     run(["scons", "platform=" + ("windows" if WINDOWS else "linuxbsd"), "target=editor", "arch=x86_64",
          "dev_build=no", "debug_symbols=no", "optimize=speed", "vulkan=yes", "opengl3=yes",
-         *([] if WINDOWS else ["use_llvm=yes"]), f"-j{jobs}"], cwd=source)
+         # The external-frame bridge is Vulkan-only; D3D12 and AccessKit need SDKs the Linux build doesn't.
+         *(["d3d12=no", "accesskit=no"] if WINDOWS else ["use_llvm=yes"]), f"-j{jobs}"], cwd=source)
 
 
 def materials(source):

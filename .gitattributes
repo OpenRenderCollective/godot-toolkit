@@ -1,0 +1,2 @@
+# git apply needs the patches byte-for-byte; keep them LF on Windows checkouts.
+*.patch text eol=lf
