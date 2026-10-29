@@ -99,8 +99,9 @@ Json fields_for(const UsdPrim& selected) {
         ["tooltip"] = "A texture projected from the light like a slide projector: its colour times alpha tints the light, and outside it the light is dark. OpenRemix only.";
       add("inputs:remix:cookie:fov", "Projection width (degrees)", "Light cookie", "float", 0.f, 0, 179.9)
         ["tooltip"] = "How wide the cookie is projected. Zero turns the cookie off. OpenRemix only.";
-      add("inputs:remix:cookie:up", "Cookie up (world)", "Light cookie", "float3", {0, 0, 1}, -1e6, 1e6, "vector")
-        ["tooltip"] = "The world direction the top of the cookie faces. It must not point along the light. OpenRemix only.";
+      auto& up = add("inputs:remix:cookie:up", "Cookie up (world)", "Light cookie", "float3", {0, 0, 1}, -1e6, 1e6, "vector");
+      up["tooltip"] = "The world direction the top of the cookie faces. It must not point along the light. OpenRemix only.";
+      up["nonzero"] = true;
     }
   }
   auto shader = shader_for(selected);
@@ -185,6 +186,24 @@ Json fields_for(const UsdPrim& selected) {
     openremix("openremix:iridescence:flowSpeed", "Flow speed", "Iridescence flow", "float", 0.1f, -100, 100,
       "How fast the swirls drift, per second.");
   }
+  // OpenRemix's subsurface scattering, as Blender's Principled panel: weight,
+  // radius per channel, scale in metres, anisotropy (openremix:subsurface:*).
+  if (!glass) {
+    auto subsurface = [&](const char* name, const char* label, const char* type, Json fallback, double minimum,
+                          double maximum, const char* tooltip, const char* control = "number") -> Json& {
+      auto& field = add(name, label, "Subsurface", type, fallback, minimum, maximum, control);
+      field["tooltip"] = std::string(tooltip) + " OpenRemix only.";
+      return field;
+    };
+    subsurface("openremix:subsurface:weight", "Weight", "float", 0.f, 0, 1,
+      "How much light enters the surface and leaves it nearby, softening and colouring shadows, as on skin, wax or leaves. Zero turns it off.");
+    subsurface("openremix:subsurface:radius", "Radius", "float3", {1, 0.2, 0.1}, 0, 100,
+      "How far red, green and blue light travel under the surface, relative to each other.", "vector")["enabled_by"] = "openremix:subsurface:weight";
+    subsurface("openremix:subsurface:scale", "Scale (m)", "float", 0.05f, 0.0001, 10,
+      "The radius's size in metres. Skin is about 0.01; wax and marble more.")["enabled_by"] = "openremix:subsurface:weight";
+    subsurface("openremix:subsurface:anisotropy", "Anisotropy", "float", 0.f, -0.9, 0.9,
+      "Positive: light scatters forward and travels further. Negative: it scatters back toward the surface.")["enabled_by"] = "openremix:subsurface:weight";
+  }
   add("inputs:normalmap_texture", "Normal texture", "Normal", "asset", "", 0, 1, "texture");
   add("inputs:enable_emission", "Enable emission", "Emission", "bool", false, 0, 1, "bool");
   add("inputs:emissive_color_constant", "Emission color", "Emission", "color3f", {0, 0, 0}, 0, 1, "color")["enabled_by"] = "inputs:enable_emission";
@@ -261,9 +280,11 @@ void Document::set_authoring_property(const Json& request, bool reset) {
   } else if (control == "bool" && !value.is_boolean()) throw std::runtime_error("Expected a checkbox value");
   else if (control == "vector") {
     if (!value.is_array() || value.size() != 3) throw std::runtime_error("Expected an X, Y, Z vector");
-    for (auto& component : value) if (!component.is_number() || !std::isfinite(component.get<double>()))
-      throw std::runtime_error("Vector components must be finite numbers");
-    if (value[0] == 0 && value[1] == 0 && value[2] == 0) throw std::runtime_error("The direction must not be zero");
+    for (auto& component : value) if (!component.is_number() || !std::isfinite(component.get<double>()) ||
+        component.get<double>() < field["min"].get<double>() || component.get<double>() > field["max"].get<double>())
+      throw std::runtime_error("Vector components must be finite and within the supported range");
+    if (field.value("nonzero", false) && value[0] == 0 && value[1] == 0 && value[2] == 0)
+      throw std::runtime_error("The direction must not be zero");
   } else if (control == "texture" || control == "file") {
     if (!value.is_string()) throw std::runtime_error("Expected a file path");
     auto file = value.get<std::string>();

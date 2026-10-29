@@ -135,6 +135,13 @@
     "hint": "Thin-film interference colours on materials that have a film (soap bubbles, oil slicks, beetle shells). Off: those materials reflect without it."
   },
   {
+    "key": "subsurface",
+    "label": "Subsurface scattering",
+    "group": "Sampling",
+    "default": true,
+    "hint": "Light that enters skin, wax or leaves and leaves them nearby, on materials that have it. Off: those materials are lit as plain diffuse surfaces."
+  },
+  {
     "key": "caustics",
     "label": "Caustics",
     "group": "Sampling",
