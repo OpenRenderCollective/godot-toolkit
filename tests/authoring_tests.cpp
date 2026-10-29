@@ -75,6 +75,7 @@ int main() {
     check(glass.contains("iridescence") && !field(doc, shader, "openremix:iridescence:filmIor").is_null(), "Glass keeps its film");
     check(field(doc, shader, "openremix:iridescence:structural").is_null() &&
           field(doc, shader, "inputs:thin_film_thickness_from_albedo_alpha").is_null(), "Glass has no structural colour or thickness from alpha");
+    check(field(doc, shader, "openremix:subsurface:weight").is_null(), "Glass has no subsurface scattering");
     check(field(doc, shader, "inputs:transmittance_measurement_distance")["disabled_by"] == "inputs:thin_walled",
           "A thin wall has no measurement distance");
     set(shader, "inputs:thin_walled", true); set(shader, "inputs:transmittance_measurement_distance", 4);
@@ -87,6 +88,23 @@ int main() {
     bool rejected = false;
     try { doc.dispatch({{"op", "set_material_model"}, {"path", material}, {"model", "portal"}}); } catch (const std::exception&) { rejected = true; }
     check(rejected, "Unsupported surface models are rejected");
+    // Subsurface scattering, as Blender's Principled panel (OpenRemix's attributes).
+    check(field(doc, shader, "openremix:subsurface:weight")["value"] == 0 &&
+          field(doc, shader, "openremix:subsurface:radius")["control"] == "vector" &&
+          field(doc, shader, "openremix:subsurface:radius")["enabled_by"] == "openremix:subsurface:weight",
+          "Subsurface controls on opaque materials");
+    check(!doc.scene()["materials"][0].contains("subsurface"), "No subsurface until weighted");
+    set(shader, "openremix:subsurface:weight", 0.5);
+    set(shader, "openremix:subsurface:radius", Json::array({1, 0.5, 0.25}));
+    set(shader, "openremix:subsurface:scale", 0.01);
+    auto sss = doc.scene()["materials"][0]["subsurface"];
+    check(sss["weight"] == 0.5 && sss["radius"] == Json::array({1, 0.5, 0.25}) && std::abs(sss["scale"].get<float>() - 0.01f) < 1e-6f,
+          "Subsurface reaches the renderer snapshot");
+    rejected = false;
+    try { set(shader, "openremix:subsurface:radius", Json::array({1, -1, 0})); } catch (const std::exception&) { rejected = true; }
+    check(rejected, "A negative radius is rejected");
+    set(shader, "openremix:subsurface:radius", Json::array({0, 0, 0}));
+    check(doc.scene()["materials"][0]["subsurface"]["radius"] == Json::array({0, 0, 0}), "A zero radius is allowed (only directions must be nonzero)");
     const auto before = editor::layer_text(doc.stage()->GetEditTarget().GetLayer());
     for (auto invalid : Json::array({
       {{"op", "set_authoring_property"}, {"path", shader}, {"property", "inputs:metallic_constant"}, {"value", 2}},

@@ -110,6 +110,10 @@ func run() -> void:
 	app._select(MESH)
 	check(inspector.controls.has(MATERIAL + "/Shader|inputs:thin_walled") and not inspector.controls.has(MATERIAL + "/Shader|inputs:metallic_constant"), "Translucent materials show transmission controls")
 	app._command({"op": "set_material_model", "path": MATERIAL, "model": "opaque"})
+	# Subsurface scattering, as Blender's panel: Radius is an X, Y, Z control.
+	app._select(MESH)
+	var radius_id := MATERIAL + "/Shader|openremix:subsurface:radius"
+	check(inspector.controls.has(MATERIAL + "/Shader|openremix:subsurface:weight") and inspector.controls.has(radius_id) and inspector.controls[radius_id].fields.size() == 3, "Opaque materials show the Subsurface controls")
 	app._select(light)
 	var source := directory.path_join("source/checker.png")
 	DirAccess.make_dir_recursive_absolute(source.get_base_dir())
