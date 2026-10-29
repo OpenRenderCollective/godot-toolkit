@@ -128,6 +128,13 @@
     "hint": "Reuse local lighting on similar rough surfaces. Bypassed by RR and luminance clamps; may change lighting and temporal noise."
   },
   {
+    "key": "iridescence",
+    "label": "Iridescence",
+    "group": "Sampling",
+    "default": true,
+    "hint": "Thin-film interference colours on materials that have a film (soap bubbles, oil slicks, beetle shells). Off: those materials reflect without it."
+  },
+  {
     "key": "accumulate",
     "label": "Progressive reference rendering",
     "group": "Sampling",

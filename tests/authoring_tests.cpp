@@ -51,6 +51,16 @@ int main() {
     check(std::abs(doc.scene()["materials"][0]["metallic"].get<float>() - 0.8f) < 0.001, "Omitted shader inputs must be authorable");
     set(material, "inputs:wrap_mode_u", 2);
     check(doc.scene()["materials"][0]["wrap_mode_u"] == 2, "Material selection must target its shader, including uint attributes");
+    check(!doc.scene()["materials"][0].contains("iridescence"), "No thin film until enabled");
+    check(field(doc, shader, "openremix:iridescence:filmIor")["enabled_by"] == "inputs:enable_thin_film", "Iridescence controls follow the thin-film switch");
+    set(shader, "inputs:enable_thin_film", true);
+    set(shader, "inputs:thin_film_thickness_constant", 450);
+    set(shader, "openremix:iridescence:filmIor", 2.4);
+    set(shader, "openremix:iridescence:flowAmplitude", 300);
+    const auto film = doc.scene()["materials"][0]["iridescence"];
+    check(film["thickness"] == 450 && std::abs(film["ior"].get<float>() - 2.4f) < 0.001 && film["flow_amplitude"] == 300 &&
+          film["strength"] == 1, "OpenRemix iridescence attributes must be authorable beside the MDL inputs");
+    check(field(doc, shader, "openremix:iridescence:filmIor")["overridden"], "Iridescence edits land in the edit layer");
     const auto before = editor::layer_text(doc.stage()->GetEditTarget().GetLayer());
     for (auto invalid : Json::array({
       {{"op", "set_authoring_property"}, {"path", shader}, {"property", "inputs:metallic_constant"}, {"value", 2}},
