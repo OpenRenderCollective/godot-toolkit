@@ -380,6 +380,9 @@ public:
     if (!std::isfinite(meters_per_unit) || meters_per_unit <= 0) throw std::runtime_error("Invalid USD scene units");
     auto scale = std::to_string(0.01 / meters_per_unit);
     if (!openremix_) checked(api_.SetConfigVariable("rtx.sceneScale", scale.c_str()), "Set USD scene scale");
+    // OpenRemix's scene scale is metres per unit: subsurface radii, denoiser
+    // hit distances and guiding cells follow the project's units.
+    else checked(api_.SetConfigVariable("rtx.native.pathtrace.sceneScale", std::to_string(meters_per_unit).c_str()), "Set USD scene scale");
     // Light handles are the light hashes, and Remix applies DestroyLight only at
     // the next Present. Destroying a light that this scene creates again would
     // remove the new light, so only lights missing from the new scene go.

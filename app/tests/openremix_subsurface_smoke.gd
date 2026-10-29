@@ -70,6 +70,19 @@ func bleed(image: Image) -> Vector2:
 			light_sum += maxf(c.get_luminance() - p.get_luminance(), 0); red += (c.r - p.r) - (c.b - p.b)
 	return Vector2(light_sum, red)
 
+# Whether the quad is drawn: where the plain frame shows its unlit part, the
+# frame is not the brighter background (an edit can present frames of the
+# scene being rebuilt, without it).
+func quad_missing(image: Image) -> bool:
+	var dark := 0
+	var background := 0
+	for y in image.get_height():
+		for x in image.get_width():
+			if plain.get_pixel(x, y).get_luminance() < 0.02:
+				dark += 1
+				if image.get_pixel(x, y).get_luminance() > 0.15: background += 1
+	return background > dark / 3
+
 # The brightest pixel: the lit disk, once the scene renders.
 func brightest(image: Image) -> float:
 	var top := 0.0
@@ -85,7 +98,8 @@ func advance() -> void:
 	var image := texture.get_image()
 	# The first frames may precede the scene and the settled camera, and an edit
 	# may present a frame of the scene being rebuilt: wait for the lit disk.
-	if (phase == 0 and frames < 600) or brightest(image) < 0.1:
+	if phase > 0 and quad_missing(image): print("waiting for the quad (frame %d)" % frames)
+	if (phase == 0 and frames < 600) or brightest(image) < 0.1 or (phase > 0 and quad_missing(image)):
 		if frames < FRAME_BUDGET: checking = false; return
 		fail("Shared image shows no lit quad"); return
 	image.save_png(directory.path_join("phase-%d.png" % phase))
