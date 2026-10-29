@@ -358,7 +358,7 @@ func _command(data: Dictionary) -> void:
 			notice.confirmed.connect(notice.queue_free)
 			notice.canceled.connect(notice.queue_free)
 			notice.popup_centered()
-		if data.op in ["set_authoring_property", "reset_authoring_property", "set_light_type", "transform", "set_parent"] and library_selection.is_empty():
+		if data.op in ["set_authoring_property", "reset_authoring_property", "set_light_type", "set_material_model", "transform", "set_parent"] and library_selection.is_empty():
 			_select(selection)
 		return
 	if result.has("selection"):

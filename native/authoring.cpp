@@ -87,6 +87,21 @@ Json fields_for(const UsdPrim& selected) {
       add("inputs:shaping:cone:softness", "Cone softness", "Cone", "float", 0.f, 0, 1);
       add("inputs:shaping:focus", "Focus", "Cone", "float", 0.f, 0, 100);
     }
+    // UsdLuxShapingAPI's IES profile, and OpenRemix's light cookie (inputs
+    // outside UsdLux; usd/capture_writer.cpp), which other runtimes ignore.
+    if (type == "SphereLight" || type == "RectLight" || type == "DiskLight" || type == "CylinderLight") {
+      auto& ies = add("inputs:shaping:ies:file", "IES profile", "Light profile", "asset", "", 0, 1, "file");
+      ies["filters"] = {"*.ies ; IES photometric profiles"};
+      ies["tooltip"] = "A measured fixture's light distribution (IESNA LM-63 file), aimed along the light's axis. OpenRemix only.";
+    }
+    if (type == "SphereLight") {
+      add("inputs:remix:cookie:texture", "Cookie texture", "Light cookie", "asset", "", 0, 1, "texture")
+        ["tooltip"] = "A texture projected from the light like a slide projector: its colour times alpha tints the light, and outside it the light is dark. OpenRemix only.";
+      add("inputs:remix:cookie:fov", "Projection width (degrees)", "Light cookie", "float", 0.f, 0, 179.9)
+        ["tooltip"] = "How wide the cookie is projected. Zero turns the cookie off. OpenRemix only.";
+      add("inputs:remix:cookie:up", "Cookie up (world)", "Light cookie", "float3", {0, 0, 1}, -1e6, 1e6, "vector")
+        ["tooltip"] = "The world direction the top of the cookie faces. It must not point along the light. OpenRemix only.";
+    }
   }
   auto shader = shader_for(selected);
   if (!shader) return fields;
@@ -97,6 +112,15 @@ Json fields_for(const UsdPrim& selected) {
     add("inputs:transmittance_color", "Transmission color", "Transmission", "color3f", {1, 1, 1}, 0, 1, "color");
     add("inputs:transmittance_texture", "Transmission texture", "Transmission", "asset", "", 0, 1, "texture");
     add("inputs:ior_constant", "Index of refraction", "Transmission", "float", 1.3f, 1, 3);
+    auto& distance = add("inputs:transmittance_measurement_distance", "Measurement distance", "Transmission", "float", 1.f, 0.001, 65504);
+    distance["disabled_by"] = "inputs:thin_walled";
+    distance["tooltip"] = "The depth, in scene units, at which light passing through has the transmission color. Shorter distances make thick glass or water darker.";
+    add("inputs:thin_walled", "Thin-walled", "Transmission", "bool", false, 0, 1, "bool")
+      ["tooltip"] = "A sheet with no inside, like a window pane or bubble: light passes through without bending.";
+    add("inputs:thin_wall_thickness", "Wall thickness", "Transmission", "float", 1.f, 0.001, 65504)
+      ["enabled_by"] = "inputs:thin_walled";
+    add("inputs:use_diffuse_layer", "Diffuse layer", "Transmission", "bool", false, 0, 1, "bool")
+      ["tooltip"] = "Scatters light passing through, like frosted plastic, using the transmission texture as its color. Not shown by OpenRemix's path tracer yet.";
   } else {
     add("inputs:diffuse_color_constant", "Base color", "Base color", "color3f", {0.7, 0.7, 0.7}, 0, 1, "color");
     add("inputs:diffuse_texture", "Base color texture", "Base color", "asset", "", 0, 1, "texture");
@@ -228,21 +252,68 @@ void Document::set_authoring_property(const Json& request, bool reset) {
     for (auto& component : value) if (!component.is_number() || !std::isfinite(component.get<double>()) || component.get<double>() < 0 || component.get<double>() > 1)
       throw std::runtime_error("Color components must be between zero and one");
   } else if (control == "bool" && !value.is_boolean()) throw std::runtime_error("Expected a checkbox value");
-  else if (control == "texture") {
+  else if (control == "vector") {
+    if (!value.is_array() || value.size() != 3) throw std::runtime_error("Expected an X, Y, Z vector");
+    for (auto& component : value) if (!component.is_number() || !std::isfinite(component.get<double>()))
+      throw std::runtime_error("Vector components must be finite numbers");
+    if (value[0] == 0 && value[1] == 0 && value[2] == 0) throw std::runtime_error("The direction must not be zero");
+  } else if (control == "texture" || control == "file") {
+    if (!value.is_string()) throw std::runtime_error("Expected a file path");
     auto file = value.get<std::string>();
     if (!file.empty()) {
       auto absolute = fs::path(file);
       if (!absolute.is_absolute()) absolute = project_path_.parent_path() / absolute;
-      if (!fs::is_regular_file(absolute)) throw std::runtime_error("Texture file does not exist");
+      if (!fs::is_regular_file(absolute)) throw std::runtime_error(control == "texture" ? "Texture file does not exist" : "File does not exist");
       value = fs::relative(absolute, fs::path(edit_layer_->GetRealPath()).parent_path()).generic_string();
     }
   }
-  if (name.rfind("inputs:shaping:", 0) == 0) UsdLuxShapingAPI::Apply(prim);
+  // UsdLuxShapingAPI's fallback cone is 90 degrees: keep an unshaped light
+  // emitting everywhere when an IES profile, focus or softness first applies it.
+  if (name.rfind("inputs:shaping:", 0) == 0 && !prim.HasAPI<UsdLuxShapingAPI>()) {
+    auto shaping = UsdLuxShapingAPI::Apply(prim);
+    if (name != "inputs:shaping:cone:angle" && !shaping.GetShapingConeAngleAttr().HasAuthoredValue())
+      shaping.CreateShapingConeAngleAttr().Set(180.f);
+  }
   if (!prim.GetAttribute(TfToken(name))) {
     const auto type = SdfSchema::GetInstance().FindType(TfToken(field["type"].get<std::string>()));
     if (!type || !prim.CreateAttribute(TfToken(name), type, false)) throw std::runtime_error("Could not create authoring attribute");
   }
   set_property({{"path", prim.GetPath().GetString()}, {"property", name}, {"value", value}});
+  // A cookie shows only with a projection width: give a new one a usable width.
+  if (name == "inputs:remix:cookie:texture" && !value.get<std::string>().empty() &&
+      read_value(prim.GetAttribute(TfToken("inputs:remix:cookie:fov")), 0.f).get<double>() <= 0) {
+    auto fov = prim.GetAttribute(TfToken("inputs:remix:cookie:fov"));
+    if (!fov) fov = prim.CreateAttribute(TfToken("inputs:remix:cookie:fov"), SdfValueTypeNames->Float, false);
+    fov.Set(60.f);
+  }
+}
+
+// AperturePBR's surface model: the shader's MDL module, keeping its inputs.
+// The texture moves between the opaque base color and the transmission slot
+// when the other is empty, so captured glass keeps its tint.
+void Document::set_material_model(const Json& request) {
+  auto prim = stage_->GetPrimAtPath(SdfPath(authored_path(request.at("path").get<std::string>())));
+  auto shader = UsdShadeShader(shader_for(prim));
+  if (!shader) throw std::runtime_error("Select a material");
+  const auto model = request.at("model").get<std::string>();
+  if (model != "opaque" && model != "translucent") throw std::runtime_error("Unsupported surface model");
+  const bool translucent = model == "translucent";
+  const std::string name = translucent ? "AperturePBR_Translucent" : "AperturePBR_Opacity";
+  SdfAssetPath current;
+  shader.GetSourceAsset(&current, TfToken("mdl"));
+  auto module = current.GetAssetPath();
+  const auto slash = module.find_last_of("/\\");
+  module = (slash == std::string::npos ? std::string() : module.substr(0, slash + 1)) + name + ".mdl";
+  shader.CreateImplementationSourceAttr().Set(TfToken("sourceAsset"));
+  shader.SetSourceAsset(SdfAssetPath(module), TfToken("mdl"));
+  shader.SetSourceAssetSubIdentifier(TfToken(name), TfToken("mdl"));
+  const std::string from = translucent ? "diffuse_texture" : "transmittance_texture";
+  const std::string to = translucent ? "transmittance_texture" : "diffuse_texture";
+  const auto texture = resolved_texture_path(shader.GetPrim(), ("inputs:" + from).c_str());
+  if (!texture.empty() && resolved_texture_path(shader.GetPrim(), ("inputs:" + to).c_str()).empty()) {
+    const auto relative = fs::relative(fs::path(texture), fs::path(edit_layer_->GetRealPath()).parent_path()).generic_string();
+    shader.CreateInput(TfToken(to), SdfValueTypeNames->Asset).Set(SdfAssetPath(relative));
+  }
 }
 
 void Document::set_light_type(const Json& request) {

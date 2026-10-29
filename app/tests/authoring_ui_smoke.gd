@@ -96,6 +96,21 @@ func run() -> void:
 	check(inspector.controls.has(light + "|inputs:shaping:cone:angle"), "Spotlight inspector needs cone controls")
 	app._command({"op": "set_light_type", "path": light, "type": "RectLight"})
 	check(inspector.controls.has(light + "|inputs:width") and not inspector.controls.has(light + "|inputs:radius"), "Light shape controls must change with type")
+	check(inspector.controls.has(light + "|inputs:shaping:ies:file") and not inspector.controls.has(light + "|inputs:remix:cookie:texture"), "Area lights take an IES profile, not a cookie")
+	app._command({"op": "set_light_type", "path": light, "type": "SphereLight"})
+	var up_id := light + "|inputs:remix:cookie:up"
+	check(inspector.controls.has(up_id) and inspector.controls[up_id].fields.size() == 3 and inspector.controls[up_id].fields[2].value == 1, "Cookie up is an X, Y, Z control")
+	inspector.controls[up_id].fields[0].value = 1; inspector.controls[up_id].fields[2].value = 0
+	inspector._commit_spin(up_id)
+	await settle()
+	var authored: Array = inspector.request.call({"op": "inspect", "path": light}).authoring.fields.filter(func(f: Dictionary): return f.property == "inputs:remix:cookie:up")
+	check(authored[0].value == [1.0, 0.0, 0.0], "Cookie up edits reach the document")
+	# Converting a material's surface model shows its transmission controls.
+	app._command({"op": "set_material_model", "path": MATERIAL, "model": "translucent"})
+	app._select(MESH)
+	check(inspector.controls.has(MATERIAL + "/Shader|inputs:thin_walled") and not inspector.controls.has(MATERIAL + "/Shader|inputs:metallic_constant"), "Translucent materials show transmission controls")
+	app._command({"op": "set_material_model", "path": MATERIAL, "model": "opaque"})
+	app._select(light)
 	var source := directory.path_join("source/checker.png")
 	DirAccess.make_dir_recursive_absolute(source.get_base_dir())
 	var checker := Image.create(32, 32, false, Image.FORMAT_RGBA8)

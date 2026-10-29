@@ -49,6 +49,7 @@ private:
   void set_property(const Json& request);
   void set_authoring_property(const Json& request, bool reset = false);
   void set_light_type(const Json& request);
+  void set_material_model(const Json& request);
   void set_transform(const Json& request);
   std::string anchor_for(const std::string& path) const;
   std::string authored_path(const std::string& path) const;

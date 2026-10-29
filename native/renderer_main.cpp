@@ -11,7 +11,9 @@
 #include <cmath>
 #include <cstring>
 #include <filesystem>
+#include <fstream>
 #include <functional>
+#include <iterator>
 #include <iostream>
 #include <map>
 #include <set>
@@ -637,7 +639,10 @@ private:
     glass.refractiveIndex = data.value("ior", 1.5f);
     glass.transmittanceTexture = albedo.c_str();
     glass.transmittanceColor = vector3(data.value("transmittance", Json::array({1, 1, 1})));
-    glass.transmittanceMeasurementDistance = 1.f;
+    glass.transmittanceMeasurementDistance = data.value("transmittance_distance", 1.f);
+    glass.thinWallThickness_hasvalue = data.value("thin_walled", false);
+    glass.thinWallThickness_value = data.value("thin_wall_thickness", 1.f);
+    glass.useDiffuseLayer = data.value("use_diffuse_layer", false);
     info.pNext = data.value("kind", std::string("opaque")) == "translucent" ? static_cast<void*>(&glass) : static_cast<void*>(&opaque);
     remixapi_MaterialNormalEncodingEXT normal_encoding{};
     if (openremix_) { normal_encoding.sType = REMIXAPI_STRUCT_TYPE_MATERIAL_NORMAL_ENCODING_EXT; normal_encoding.pNext = info.pNext; normal_encoding.encoding = uint32_t(data.value("normal_encoding", 0)) + 1; info.pNext = &normal_encoding; }
@@ -783,7 +788,33 @@ private:
       usd.pAngleRadians = &angle; usd.pConeAngleRadians = &cone; info.pNext = &usd;
       usd.pConeSoftness = &softness; usd.pFocus = &focus;
     }
+    // OpenRemix: an IES profile (UsdLuxShapingAPI's file) and a light cookie,
+    // chained in front of the light's own description as OpenRemix's
+    // usd/submission.cpp does.
+    auto plain = info.pNext;
+    std::string profile;
+    remixapi_LightInfoIesProfileEXT ies{}; ies.sType = REMIXAPI_STRUCT_TYPE_LIGHT_INFO_IES_PROFILE_EXT;
+    if (const auto file = data.value("ies", std::string()); openremix_ && !file.empty() && type != "DomeLight" && type != "DistantLight") {
+      std::ifstream input(std::filesystem::u8path(file), std::ios::binary);
+      profile.assign(std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>());
+      if (!profile.empty()) { ies.data = profile.data(); ies.size = profile.size(); ies.pNext = info.pNext; info.pNext = &ies; }
+    }
+    auto cookie_texture = native_path(data.value("cookie", std::string()));
+    remixapi_LightInfoCookieEXT cookie{}; cookie.sType = REMIXAPI_STRUCT_TYPE_LIGHT_INFO_COOKIE_EXT;
+    if (openremix_ && !cookie_texture.empty() && type == "SphereLight" && data.value("cookie_fov", 0.f) > 0) {
+      cookie.texture = cookie_texture.c_str();
+      cookie.up = vector3(data.value("cookie_up", Json::array({0, 0, 1})));
+      cookie.fovDegrees = data.value("cookie_fov", 0.f);
+      cookie.pNext = info.pNext; info.pNext = &cookie;
+    }
     remixapi_LightHandle light{};
+    // A profile that is no LM-63 file, or a cookie whose up lies along the
+    // light, is rejected: still show the light without them.
+    if (info.pNext != plain) {
+      if (api_.CreateLight(&info, &light) == REMIXAPI_ERROR_CODE_SUCCESS) return light;
+      std::cerr << "OpenRemix rejected the IES profile or cookie of " << data.at("id").get<std::string>() << "; showing it without them\n";
+      info.pNext = plain;
+    }
     checked(api_.CreateLight(&info, &light), ("CreateLight " + data.at("id").get<std::string>() + " (" + type + ", " + data.value("texture", std::string()) + ")").c_str()); return light;
   }
   remixapi_Interface api_{};

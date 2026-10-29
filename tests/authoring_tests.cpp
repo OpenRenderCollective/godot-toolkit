@@ -61,6 +61,28 @@ int main() {
     check(film["thickness"] == 450 && std::abs(film["ior"].get<float>() - 2.4f) < 0.001 && film["flow_amplitude"] == 300 &&
           film["strength"] == 1, "OpenRemix iridescence attributes must be authorable beside the MDL inputs");
     check(field(doc, shader, "openremix:iridescence:filmIor")["overridden"], "Iridescence edits land in the edit layer");
+    // Converting the surface model swaps AperturePBR's module and carries the
+    // texture into the transmission slot.
+    std::ofstream(root / "glass.dds") << "DDS ";
+    set(shader, "inputs:diffuse_texture", (root / "glass.dds").string());
+    check(field(doc, shader, "inputs:thin_walled").is_null(), "Opaque materials have no transmission controls");
+    doc.dispatch({{"op", "set_material_model"}, {"path", material}, {"model", "translucent"}});
+    auto glass = doc.scene()["materials"][0];
+    check(glass["kind"] == "translucent" && doc.inspect(material)["authoring"]["surface_model"] == "translucent",
+          "Materials convert to translucent");
+    check(fs::path(glass["albedo_texture"].get<std::string>()).filename() == "glass.dds", "Conversion keeps the material's texture");
+    check(field(doc, shader, "inputs:transmittance_measurement_distance")["disabled_by"] == "inputs:thin_walled",
+          "A thin wall has no measurement distance");
+    set(shader, "inputs:thin_walled", true); set(shader, "inputs:transmittance_measurement_distance", 4);
+    glass = doc.scene()["materials"][0];
+    check(glass["thin_walled"] == true && glass["transmittance_distance"] == 4, "Translucent body controls reach the renderer snapshot");
+    doc.dispatch({{"op", "set_material_model"}, {"path", material}, {"model", "opaque"}});
+    check(doc.scene()["materials"][0]["kind"] == "opaque", "Materials convert back to opaque");
+    doc.undo(); check(doc.scene()["materials"][0]["kind"] == "translucent", "Surface model undo");
+    doc.redo();
+    bool rejected = false;
+    try { doc.dispatch({{"op", "set_material_model"}, {"path", material}, {"model", "portal"}}); } catch (const std::exception&) { rejected = true; }
+    check(rejected, "Unsupported surface models are rejected");
     const auto before = editor::layer_text(doc.stage()->GetEditTarget().GetLayer());
     for (auto invalid : Json::array({
       {{"op", "set_authoring_property"}, {"path", shader}, {"property", "inputs:metallic_constant"}, {"value", 2}},
@@ -86,6 +108,31 @@ int main() {
     doc.redo();
     doc.dispatch({{"op", "set_light_type"}, {"path", light}, {"type", "SphereLight"}});
     check(doc.scene()["lights"][0]["cone_angle"] == 180, "Sphere conversion must disable previous spotlight shaping");
+    // An IES profile (UsdLuxShapingAPI) and OpenRemix's light cookie.
+    std::ofstream(root / "fixture.ies") << "IESNA:LM-63-2002\nTILT=NONE\n1 1000 1 3 1 1 2 0 0 0\n1 1 100\n0 45 90\n0\n100 80 10\n";
+    std::ofstream(root / "cookie.dds") << "DDS ";
+    check(field(doc, light, "inputs:shaping:ies:file")["control"] == "file", "Sphere lights take an IES profile");
+    set(light, "inputs:shaping:ies:file", (root / "fixture.ies").string());
+    check(fs::path(doc.scene()["lights"][0]["ies"].get<std::string>()).filename() == "fixture.ies", "IES profile reaches the renderer snapshot");
+    {
+      const auto fresh = doc.dispatch({{"op", "add_light"}, {"type", "SphereLight"}})["selection"].get<std::string>();
+      set(fresh, "inputs:shaping:ies:file", (root / "fixture.ies").string());
+      for (const auto& rendered : doc.scene()["lights"]) if (rendered["id"] == fresh)
+        check(rendered["cone_angle"] == 180, "An IES profile must not narrow a light to the shaping API's fallback cone");
+      doc.undo(); doc.undo();
+    }
+    set(light, "inputs:remix:cookie:texture", (root / "cookie.dds").string());
+    auto cookie = doc.scene()["lights"][0];
+    check(cookie["cookie_fov"] == 60 && cookie["cookie_up"] == Json::array({0, 0, 1}), "A new cookie gets a projection width");
+    set(light, "inputs:remix:cookie:up", Json::array({1, 0, 0}));
+    check(doc.scene()["lights"][0]["cookie_up"] == Json::array({1, 0, 0}), "Cookie up is authorable");
+    rejected = false;
+    try { set(light, "inputs:remix:cookie:up", Json::array({0, 0, 0})); } catch (const std::exception&) { rejected = true; }
+    check(rejected, "A zero cookie up is rejected");
+    doc.dispatch({{"op", "set_light_type"}, {"path", light}, {"type", "RectLight"}});
+    check(field(doc, light, "inputs:remix:cookie:texture").is_null() && !field(doc, light, "inputs:shaping:ies:file").is_null(),
+          "Cookies are for sphere lights; IES profiles for area lights too");
+    doc.dispatch({{"op", "set_light_type"}, {"path", light}, {"type", "SphereLight"}});
     auto second = UsdShadeMaterial::Define(doc.stage(), SdfPath("/RootNode/Looks/Second"));
     auto subset = UsdGeomSubset::Define(doc.stage(), SdfPath("/RootNode/meshes/mesh_0123456789ABCDEF/mesh/Subset"));
     subset.CreateElementTypeAttr().Set(UsdGeomTokens->face);

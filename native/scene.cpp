@@ -155,6 +155,11 @@ Json material_json(const UsdShadeMaterial& material, Json& warnings) {
     {"emissive_intensity", attribute(shader, "inputs:enable_emission", false) ? attribute(shader, "inputs:emissive_intensity", 40.0f) : 0.0f},
     {"ior", attribute(shader, "inputs:ior_constant", 1.3f)},
     {"transmittance", {transmission[0], transmission[1], transmission[2]}},
+    // AperturePBR_Translucent's body. As OpenRemix's usd/scene.cpp material_json.
+    {"transmittance_distance", attribute(shader, "inputs:transmittance_measurement_distance", 1.0f)},
+    {"thin_walled", attribute(shader, "inputs:thin_walled", false)},
+    {"thin_wall_thickness", attribute(shader, "inputs:thin_wall_thickness", 1.0f)},
+    {"use_diffuse_layer", attribute(shader, "inputs:use_diffuse_layer", false)},
     {"filter_mode", sampler_mode(shader, "inputs:filter_mode", 1)},
     {"wrap_mode_u", sampler_mode(shader, "inputs:wrap_mode_u", 3)},
     {"wrap_mode_v", sampler_mode(shader, "inputs:wrap_mode_v", 3)},
@@ -377,6 +382,7 @@ Json prototype_json(const GeometrySource& s, const std::vector<UsdShadeMaterial>
 Json light_json(const UsdPrim& prim, const GfMatrix4d& world, Json& warnings) {
   const auto path = prim.GetPath().GetString();
   auto color = attribute(prim, "inputs:color", GfVec3f(1));
+  const auto cookie_up = attribute(prim, "inputs:remix:cookie:up", GfVec3f(0, 0, 1));
   if (attribute(prim, "inputs:enableColorTemperature", false))
     color = GfCompMult(color, UsdLuxBlackbodyTemperatureAsRgb(attribute(prim, "inputs:colorTemperature", 6500.f)));
   return {{"id", path}, {"source_path", source_path(prim)}, {"type", prim.GetTypeName().GetString()},
@@ -387,7 +393,13 @@ Json light_json(const UsdPrim& prim, const GfMatrix4d& world, Json& warnings) {
     {"angle", attribute(prim, "inputs:angle", 0.53f)}, {"cone_angle", attribute(prim, "inputs:shaping:cone:angle", 180.f)},
     {"cone_softness", attribute(prim, "inputs:shaping:cone:softness", 0.f)},
     {"focus", attribute(prim, "inputs:shaping:focus", 0.f)},
-    {"texture", texture(prim, "inputs:texture:file", warnings)}};
+    {"texture", texture(prim, "inputs:texture:file", warnings)},
+    // UsdLuxShapingAPI's IES profile, and OpenRemix's light cookie. As
+    // OpenRemix's usd/scene.cpp light_json.
+    {"ies", texture(prim, "inputs:shaping:ies:file", warnings)},
+    {"cookie", texture(prim, "inputs:remix:cookie:texture", warnings)},
+    {"cookie_up", {cookie_up[0], cookie_up[1], cookie_up[2]}},
+    {"cookie_fov", attribute(prim, "inputs:remix:cookie:fov", 0.f)}};
 }
 
 }

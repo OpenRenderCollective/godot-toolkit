@@ -118,7 +118,21 @@ func show_selection(details: Dictionary) -> void:
 			choose.item_selected.connect(func(index: int): selected_material = slots[index].path; show_selection(details))
 			add_child(choose)
 		if authoring.kind == "material" or not material_details.is_empty():
-			_label("Material changes affect every mesh using this material. Replace the material to change its surface model.", self).add_theme_font_size_override("font_size", 12)
+			_label("Material changes affect every mesh using this material.", self).add_theme_font_size_override("font_size", 12)
+			var material_authoring: Dictionary = authoring if material_details.is_empty() else material_details.authoring
+			var material_path: String = details.path if material_details.is_empty() else selected_material
+			var row := HBoxContainer.new(); add_child(row)
+			_label("Surface model", row).autowrap_mode = TextServer.AUTOWRAP_OFF
+			var models := ["opaque", "translucent"]
+			var model := OptionButton.new(); model.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+			model.add_item("Opaque"); model.add_item("Translucent (glass, water)")
+			model.select(models.find(material_authoring.get("surface_model", "opaque")))
+			model.disabled = not material_authoring.get("editable", false)
+			model.tooltip_text = "Translucent materials refract and tint the light passing through them. Converting keeps the material's texture."
+			model.item_selected.connect(func(index: int):
+				_finish_editing()
+				command_requested.emit({"op": "set_material_model", "path": material_path, "model": models[index], "label": "Change surface model"}))
+			row.add_child(model)
 		var bodies := {}
 		for field in fields:
 			var group: String = field.group
@@ -224,17 +238,31 @@ func _field(field: Dictionary, parent: Node) -> void:
 		"color":
 			var color := ColorPickerButton.new(); color.edit_alpha = false; color.custom_minimum_size.y = 22
 			color.popup_closed.connect(func(): commit.call([color.color.r, color.color.g, color.color.b])); widget = color
-		"texture":
+		"texture", "file":
+			var texture: bool = field.control == "texture"
 			var row := HBoxContainer.new(); parent.add_child(row)
-			var text := LineEdit.new(); text.placeholder_text = "No texture"; text.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+			var text := LineEdit.new(); text.placeholder_text = "No texture" if texture else "No file"; text.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 			text.text_submitted.connect(func(value: String): commit.call(value)); row.add_child(text)
 			text.focus_exited.connect(func():
 				if controls.has(id): commit.call(text.text))
-			var browse := Button.new(); browse.text = "…"; browse.tooltip_text = "Choose an ingested DDS texture"
-			browse.pressed.connect(func(): _choose_texture(commit)); row.add_child(browse)
-			var clear := Button.new(); clear.text = "×"; clear.tooltip_text = "Clear texture"
+			var browse := Button.new(); browse.text = "…"; browse.tooltip_text = "Choose an ingested DDS texture" if texture else "Choose a file"
+			browse.pressed.connect(func(): _choose_texture(commit, PackedStringArray(field.get("filters", ["*.dds ; DDS textures"])), texture)); row.add_child(browse)
+			var clear := Button.new(); clear.text = "×"; clear.tooltip_text = "Clear texture" if texture else "Clear file"
 			clear.pressed.connect(func(): commit.call("")); row.add_child(clear)
 			widget = text
+		"vector":
+			var row := HBoxContainer.new(); parent.add_child(row)
+			var spins: Array[SpinBox] = []
+			for i in range(3):
+				var spin := SpinBox.new(); spin.min_value = field.min; spin.max_value = field.max
+				spin.step = 0.01; spin.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+				spin.custom_minimum_size.x = 60; spin.tooltip_text = ["X", "Y", "Z"][i]
+				row.add_child(spin); spins.append(spin)
+				_wire_spin(spin, id)
+			row.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+			row.tooltip_text = field.get("tooltip", "")
+			controls[id] = {"widget": row, "fields": spins, "reset": reset, "request": command, "property": "value"}
+			return
 		_:
 			var number := SpinBox.new(); number.min_value = field.min; number.max_value = field.max
 			number.step = 1.0 if field.type in ["int", "uint"] else 0.01
@@ -256,6 +284,13 @@ func _update_field(field: Dictionary, field_values: Dictionary) -> void:
 	controls[id].reset.disabled = not field.get("overridden", false) or not field.get("editable", true)
 	var enabled: bool = field.get("editable", true) and (not field.has("enabled_by") or bool(field_values.get(field.path + "|" + field.enabled_by, false)))
 	enabled = enabled and (not field.has("disabled_by") or not bool(field_values.get(field.path + "|" + field.disabled_by, false)))
+	if controls[id].has("fields"):
+		for i in range(3):
+			var spin: SpinBox = controls[id].fields[i]
+			spin.editable = enabled
+			if not spin.get_line_edit().has_focus():
+				spin.set_value_no_signal(field.value[i])
+		return
 	widget.set_block_signals(true)
 	if widget is SpinBox:
 		widget.editable = enabled
@@ -277,12 +312,12 @@ func _update_field(field: Dictionary, field_values: Dictionary) -> void:
 				child.disabled = not enabled
 	widget.set_block_signals(false)
 
-func _choose_texture(commit: Callable) -> void:
+func _choose_texture(commit: Callable, filters := PackedStringArray(["*.dds ; DDS textures"]), texture := true) -> void:
 	var dialog := FileDialog.new(); dialog.access = FileDialog.ACCESS_FILESYSTEM
-	dialog.file_mode = FileDialog.FILE_MODE_OPEN_FILE; dialog.title = "Assign ingested texture"
-	dialog.filters = PackedStringArray(["*.dds ; DDS textures"])
+	dialog.file_mode = FileDialog.FILE_MODE_OPEN_FILE; dialog.title = "Assign ingested texture" if texture else "Assign file"
+	dialog.filters = filters
 	if not project_directory.is_empty():
-		dialog.current_dir = project_directory.path_join("assets")
+		dialog.current_dir = project_directory.path_join("assets") if texture else project_directory
 	add_child(dialog)
 	dialog.file_selected.connect(func(path: String): commit.call(path); dialog.queue_free())
 	dialog.canceled.connect(dialog.queue_free); dialog.popup_centered_ratio(0.65)
