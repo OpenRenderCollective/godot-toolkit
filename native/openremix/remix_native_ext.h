@@ -296,8 +296,12 @@ typedef struct remixapi_MaterialNormalEncodingEXT {
 #define REMIXAPI_FORMAT_BC6H_UFLOAT_EXT ((remixapi_Format)143)
 #define REMIXAPI_FORMAT_BC6H_SFLOAT_EXT ((remixapi_Format)144)
 
-// Optional pNext on opaque MaterialInfo: a thin-film coating whose
-// interference colours the reflection (iridescence), evaluated spectrally.
+// Optional pNext on opaque or translucent MaterialInfo: a thin-film coating
+// whose interference colours the reflection (iridescence), evaluated
+// spectrally. On a translucent material (glass, water) the surface becomes a
+// smooth dielectric under the film: its reflection takes the film's colour
+// whatever its coverage, and the light through it the complementary colour;
+// structural does not apply. A portal material is invalid.
 // It takes the place of MaterialInfoOpaqueEXT's thinFilmThickness and
 // alphaIsThinFilmThickness, which alone give a film of strength 1 and
 // refractive index 1.5.
